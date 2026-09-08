@@ -48,7 +48,7 @@ export async function semanticSearch(
     String(record["model"] ?? ""),
     process.env["OPENAI_API_KEY"] ?? "",
   );
-  const [vector] = await embedder.embed([query]);
+  const [vector] = await embedder.embed([String(record["query_prefix"] ?? "") + query]);
   if (!vector!.some((x) => x !== 0)) {
     return []; // an all-zero query vector has no cosine neighborhood
   }

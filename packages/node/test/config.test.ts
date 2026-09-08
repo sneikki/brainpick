@@ -292,3 +292,17 @@ test("brain unknown audience warns and falls back", () => {
   expect(cfg.brain.audience).toBe("personal");
   expect(warnings.some((w) => w.includes("audience"))).toBe(true);
 });
+
+test("embedding prefixes parse and default empty", () => {
+  const root = tempDir();
+  expect(loadConfig(root).models.embedding.document_prefix).toBe("");
+  writeFileSync(
+    join(root, "brainpick.toml"),
+    '[models.embedding]\nkind = "ollama"\n' +
+      'document_prefix = "search_document: "\nquery_prefix = "search_query: "\n',
+    "utf8",
+  );
+  const cfg = loadConfig(root);
+  expect(cfg.models.embedding.document_prefix).toBe("search_document: ");
+  expect(cfg.models.embedding.query_prefix).toBe("search_query: ");
+});

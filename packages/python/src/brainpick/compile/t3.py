@@ -387,7 +387,8 @@ def _maybe_embed_entities(bp: Path, entities: list[dict], embedding_record: dict
             record["kind"], record.get("endpoint", ""), record.get("model", ""),
             api_key=os.environ.get("OPENAI_API_KEY", ""),
         )
-        texts = [f'{e["name"]} — {e["description"]}' for e in entities]
+        prefix = str(record.get("document_prefix", ""))
+        texts = [f'{prefix}{e["name"]} — {e["description"]}' for e in entities]
         vectors = embedder.embed(texts)
         dim = len(vectors[0]) if vectors else int(record.get("dim") or 0)
         rows = [

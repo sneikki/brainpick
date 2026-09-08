@@ -168,9 +168,14 @@ class T2Result:
     warning: str | None = None
 
 
-def fingerprint(kind: str, endpoint: str, model: str, dim: int) -> str:
-    """First 16 hex chars of sha256 over `kind|endpoint|model|dim` (spec/30)."""
-    return sha256_hex(f"{kind}|{endpoint}|{model}|{dim}".encode("utf-8"))[:16]
+def fingerprint(kind: str, endpoint: str, model: str, dim: int,
+                document_prefix: str = "", query_prefix: str = "") -> str:
+    """First 16 hex chars of sha256 over `kind|endpoint|model|dim` (spec/30) —
+    `|document_prefix|query_prefix` appended only when a prefix is set."""
+    key = f"{kind}|{endpoint}|{model}|{dim}"
+    if document_prefix or query_prefix:
+        key += f"|{document_prefix}|{query_prefix}"
+    return sha256_hex(key.encode("utf-8"))[:16]
 
 
 def t2_gate(config) -> tuple[bool, str | None]:
@@ -229,11 +234,13 @@ def _sync_vectors(bp: Path, chunks: list[dict], embedding, full: bool) -> bool:
     embedder = make_embedder(kind, endpoint, model, api_key=os.environ.get("OPENAI_API_KEY", ""))
     store = VectorStore(bp / "t2" / "lancedb")
 
+    doc_prefix, query_prefix = embedding.document_prefix, embedding.query_prefix
     old = _read_json(bp / "t2" / "embedding.json")
     same_backend = (
         not full
         and old is not None
         and (old.get("kind"), old.get("endpoint"), old.get("model")) == (kind, endpoint, model)
+        and (old.get("document_prefix", ""), old.get("query_prefix", "")) == (doc_prefix, query_prefix)
     )
 
     if same_backend:
@@ -244,7 +251,7 @@ def _sync_vectors(bp: Path, chunks: list[dict], embedding, full: bool) -> bool:
     else:
         to_embed, delete_ids = chunks, set()
 
-    vectors = embedder.embed([chunk["text"] for chunk in to_embed]) if to_embed else []
+    vectors = embedder.embed([doc_prefix + chunk["text"] for chunk in to_embed]) if to_embed else []
     if to_embed:
         dim = len(vectors[0])
     elif same_backend:
@@ -258,7 +265,7 @@ def _sync_vectors(bp: Path, chunks: list[dict], embedding, full: bool) -> bool:
         # the backend answers with a new dimensionality — every old vector is invalid
         same_backend = False
         to_embed = chunks
-        vectors = embedder.embed([chunk["text"] for chunk in chunks])
+        vectors = embedder.embed([doc_prefix + chunk["text"] for chunk in chunks])
 
     rows = [
         {"id": c["id"], "doc": c["doc"], "ord": c["ord"], "text": c["text"], "vector": v}
@@ -273,8 +280,11 @@ def _sync_vectors(bp: Path, chunks: list[dict], embedding, full: bool) -> bool:
     record = {
         "dim": dim,
         "endpoint": endpoint,
-        "fingerprint": fingerprint(kind, endpoint, model, dim),
+        "fingerprint": fingerprint(kind, endpoint, model, dim, doc_prefix, query_prefix),
         "kind": kind,
         "model": model,
     }
+    if doc_prefix or query_prefix:  # spec/30: keys appear only when a prefix is set
+        record["document_prefix"] = doc_prefix
+        record["query_prefix"] = query_prefix
     return write_if_changed(bp / "t2" / "embedding.json", canonical_json(record))

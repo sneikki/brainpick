@@ -34,7 +34,7 @@ def semantic_search(bp: str | Path, records: list[dict], query: str, limit: int 
         record.get("kind", ""), record.get("endpoint", ""), record.get("model", ""),
         api_key=os.environ.get("OPENAI_API_KEY", ""),
     )
-    [vector] = embedder.embed([query])
+    [vector] = embedder.embed([str(record.get("query_prefix", "")) + query])
     if not any(vector):
         return []  # an all-zero query vector has no cosine neighborhood
 
