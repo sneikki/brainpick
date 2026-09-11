@@ -1,15 +1,17 @@
 /** MCP tool payloads (spec/70): budget shaping, forgiving resolution, guarded
  * writes, base_sha conflicts (the twin of packages/python/tests/test_mcp_tools.py). */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 import { afterEach, expect, test } from "vitest";
 
 import { loadConfig } from "../src/config";
 import { sha256Hex } from "../src/core/canonical";
 import {
+  extractSections,
   neighborsPayload,
+  outline,
   overviewPayload,
   readPayload,
   searchPayload,
@@ -17,6 +19,7 @@ import {
   tokensOf,
   writePayload,
 } from "../src/mcp";
+import { logQuery, newSessionId } from "../src/querylog";
 import { ServeState } from "../src/serve/state";
 import { cleanup, copyBundle, prependPath, stageFakeHenxels, stageT3Export, tempDir } from "./helpers";
 
@@ -115,13 +118,26 @@ test("overview similarity_gaps_open_count reads the artifact", async () => {
   expect(overviewPayload(state)["similarity_gaps_open_count"]).toBe(1);
 });
 
+test("search hits carry the matched snippet", async () => {
+  // a hit names WHERE in the doc the match is — the retriever's snippet rides along,
+  // so a long log-shaped page such as a journal day is not reduced to its title (spec/70)
+  const root = copyBundle();
+  const state = await makeState(root);
+  const result = await searchPayload(state, "tides", "keyword");
+  const top = (result["hits"] as Array<Record<string, unknown>>)[0]!;
+  expect(top["path"]).toBe("kuu.md");
+  expect(typeof top["snippet"]).toBe("string");
+  expect(String(top["snippet"]).toLowerCase()).toContain("tides");
+  expect(String(top["snippet"]).length).toBeLessThanOrEqual(260);
+});
+
 test("search hits have why not bodies", async () => {
   const result = await searchPayload(await makeState(copyBundle()), "aurinko");
   const hits = result["hits"] as Array<Record<string, unknown>>;
   expect(new Set(hits.map((h) => h["path"]))).toEqual(
     new Set(["aurinko.md", "komeetta.md", "planeetat.md", "yksinainen.md"]),
   );
-  expect(new Set(Object.keys(hits[0]!))).toEqual(new Set(["path", "title", "description", "score", "why"]));
+  expect(new Set(Object.keys(hits[0]!))).toEqual(new Set(["path", "title", "description", "score", "why", "snippet"]));
   expect(result["used_modes"]).toEqual(["keyword"]);
   expect(result["degraded_from"]).toBe("semantic"); // auto without T2 says so (spec/30)
   expect(result["truncated"]).toBe(false);
@@ -162,7 +178,7 @@ test("search semantic hits via mock vectors", async () => {
   const hits = semantic["hits"] as Array<Record<string, unknown>>;
   expect(hits.length).toBeGreaterThan(0);
   for (const h of hits) {
-    expect(new Set(Object.keys(h))).toEqual(new Set(["path", "title", "description", "score", "why"]));
+    expect(new Set(Object.keys(h))).toEqual(new Set(["path", "title", "description", "score", "why", "snippet"]));
   }
   const fused = await searchPayload(state, "aurinko", "auto");
   expect(fused["used_modes"]).toEqual(["keyword", "semantic"]);
@@ -352,6 +368,17 @@ test("write happy path bumps seq and timestamp", async () => {
   expect(readFileSync(join(root, "index.md"), "utf8")).toContain("- [Uusi kivi](uusi-kivi.md)");
 });
 
+test("write leaves frontmatter-free docs without a timestamp block", async () => {
+  // journals and OKF reserved files carry no frontmatter by contract; a write that
+  // passed henxels must not grow one on the way out (spec/70 step 4)
+  const root = copyBundle();
+  const state = await makeState(root);
+  const journal = "# 2026-06-01\n\n## 2026-06-01\n\n* **08:00** `kuu` · note — tides logged.\n";
+  const result = await writePayload(state, "paivakirja/2026-06-01", journal);
+  expect(result["ok"]).toBe(true);
+  expect(readFileSync(join(root, "paivakirja", "2026-06-01.md"), "utf8")).toBe(journal);
+});
+
 test("write append_section", async () => {
   const root = copyBundle();
   const state = await makeState(root);
@@ -360,6 +387,51 @@ test("write append_section", async () => {
   const text = readFileSync(join(root, "kuu.md"), "utf8");
   expect(text).toContain("## Nousuvesi");
   expect(text).toContain("The moon pulls"); // the original body survives
+});
+
+test("write add_entry slots into the newest-first day", async () => {
+  // mode add_entry (spec/70): one entry in, the server places it by time — a missing day
+  // is created with its head, a later entry goes first, an earlier one after, and the
+  // caller never echoes the day back.
+  const root = copyBundle();
+  const state = await makeState(root);
+  const day = join(root, "paivakirja", "2026-06-02.md");
+  const first = "* **09:00** `kuu` · note — first.\n  more.\n";
+  expect((await writePayload(state, "paivakirja/2026-06-02", first, "add_entry"))["ok"]).toBe(true);
+  expect(readFileSync(day, "utf8")).toBe("# 2026-06-02\n\n## 2026-06-02\n\n" + first);
+  expect((await writePayload(state, "paivakirja/2026-06-02", "* **07:30** `kuu` · note — earlier.", "add_entry"))["ok"]).toBe(true);
+  expect((await writePayload(state, "paivakirja/2026-06-02", "* **11:15** `kuu` · note — later.", "add_entry"))["ok"]).toBe(true);
+  expect(readFileSync(day, "utf8")).toBe(
+    "# 2026-06-02\n\n## 2026-06-02\n\n" +
+      "* **11:15** `kuu` · note — later.\n\n" +
+      "* **09:00** `kuu` · note — first.\n  more.\n\n" +
+      "* **07:30** `kuu` · note — earlier.\n",
+  );
+  const bad = await writePayload(state, "paivakirja/2026-06-02", "## Not an entry\n", "add_entry");
+  expect(bad["ok"]).toBe(false);
+  expect(String(bad["instruction"])).toContain("HH:MM");
+  const page = await writePayload(state, "muistio", "* **10:00** `kuu` · note — x", "add_entry");
+  expect(page["ok"]).toBe(false);
+  expect(String(page["instruction"])).toContain("YYYY-MM-DD");
+  expect(existsSync(join(root, "muistio.md"))).toBe(false);
+});
+
+test("concurrent add_entry loses nothing", async () => {
+  // Fifty overlapping add_entry calls to one day (spec/70: writes are serialized server-side)
+  // — every entry lands, in time order, none overwritten.
+  const root = copyBundle();
+  const state = await makeState(root);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const results = await Promise.all(
+    Array.from({ length: 50 }, (_, i) =>
+      writePayload(state, "paivakirja/2026-06-03", `* **${pad(Math.floor(i / 60))}:${pad(i % 60)}** \`kuu\` · note — entry ${i}.`, "add_entry"),
+    ),
+  );
+  expect(results.every((r) => r["ok"] === true)).toBe(true);
+  const text = readFileSync(join(root, "paivakirja", "2026-06-03.md"), "utf8");
+  const times = text.split("\n").filter((l) => l.startsWith("* **")).map((l) => l.slice(4, 9));
+  expect(times.length).toBe(50);
+  expect(times).toEqual([...times].sort().reverse());
 });
 
 test("write gate refusal", async () => {
@@ -389,6 +461,22 @@ test("write henxels violation restores", async () => {
   expect(replaced["ok"]).toBe(false);
   expect(readFileSync(join(root, "kuu.md"), "utf8")).toContain("tides"); // bytes restored
   expect(state.seq).toBe(1);
+});
+
+test("write honours a contract above the bundle", async () => {
+  // spec/80 layout: henxels.yaml at the repo root, the bundle below it. `auto` must
+  // still run the contract — henxels resolves it by walking up, and so must we
+  const root = copyBundle();
+  writeFileSync(join(dirname(root), "henxels.yaml"), "henxels: []\n", "utf8");
+  const bin = stageFakeHenxels(join(tempDir(), "bin"), "kebab-case or bust");
+  process.env["PATH"] = prependPath(savedPath, bin);
+  const state = await makeState(root);
+  expect(state.config.validate.henxels).toBe("auto");
+
+  const created = await writePayload(state, "uusi.md", "# X\n");
+  expect(created["ok"]).toBe(false);
+  expect((created["instruction"] as string).trim()).toBe("kebab-case or bust");
+  expect(exists(join(root, "uusi.md"))).toBe(false);
 });
 
 test("write henxels missing warns", async () => {
@@ -538,4 +626,66 @@ test("showPayload clear has a dedicated hint", async () => {
     seq: 1,
     hint: "cleared — every open UI dropped its spotlight and caption.",
   });
+});
+
+
+// -- journal entries as read units (spec/70) ------------------------------------------
+
+const DAY =
+  "# 2026-09-09\n\n## 2026-09-09\n\n" +
+  "* **05:50** `pipeless` · debug — proof audits passed on version/229\n  audit details\n\n" +
+  "* **05:30** `nuutti-brain` · feature — every harness wired\n  wiring details\n  more wiring\n\n" +
+  "* **05:05** `pipeless` · debug — listing fallback stops early\n  listing details\n";
+
+test("outline lists journal entries and sections take a time", () => {
+  const lines = outline(DAY);
+  expect(lines.slice(0, 2)).toEqual(["# 2026-09-09", "## 2026-09-09"]);
+  expect(lines[2]!.startsWith("* **05:50**") && lines.length === 5).toBe(true);
+  const one = extractSections(DAY, ["05:30"]);
+  expect(one).toBe("* **05:30** `nuutti-brain` · feature — every harness wired\n  wiring details\n  more wiring\n");
+  const two = extractSections(DAY, ["05:50", "05:05"]);
+  expect(two.split("* **").length - 1).toBe(2);
+  expect(two.includes("05:30")).toBe(false);
+  expect(extractSections(DAY, ["## 2026-09-09"]).split("* **").length - 1).toBe(3); // a heading still takes its whole section
+});
+
+test("query log writes one raw line per search", () => {
+  const dir = tempDir();
+  const saved = { log: process.env["BRAINPICK_QUERY_LOG"], dir: process.env["BRAINPICK_QUERY_LOG_DIR"] };
+  process.env["BRAINPICK_QUERY_LOG_DIR"] = dir;
+  delete process.env["BRAINPICK_QUERY_LOG"];
+  try {
+    const sid = newSessionId();
+    const request = {
+      situation: "the deploy failed on a sidecar race",
+      terms: ["FUSE"],
+      mode: "auto",
+      limit: 10,
+      scope: null,
+    };
+    const result = {
+      hits: [{ path: "journals/2026-09-09.md" }],
+      used_modes: ["keyword", "semantic"],
+      degraded_from: null,
+    };
+    const path = logQuery(sid, "nuutti-brain", request, result);
+    logQuery(sid, "nuutti-brain", request, result);
+    expect(path).toBe(join(dir, `${sid}.jsonl`));
+    const lines = readFileSync(path!, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    expect(lines.length).toBe(2);
+    expect(lines[0].situation).toBe(request.situation);
+    expect(lines[0].terms).toEqual(["FUSE"]);
+    expect(lines[0].hits).toEqual(["journals/2026-09-09.md"]);
+    expect(lines[0].used_modes).toEqual(["keyword", "semantic"]);
+    process.env["BRAINPICK_QUERY_LOG"] = "0";
+    expect(logQuery(sid, "nuutti-brain", request, result)).toBeNull();
+  } finally {
+    if (saved.log === undefined) delete process.env["BRAINPICK_QUERY_LOG"];
+    else process.env["BRAINPICK_QUERY_LOG"] = saved.log;
+    if (saved.dir === undefined) delete process.env["BRAINPICK_QUERY_LOG_DIR"];
+    else process.env["BRAINPICK_QUERY_LOG_DIR"] = saved.dir;
+  }
 });

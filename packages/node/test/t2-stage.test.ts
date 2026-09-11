@@ -378,3 +378,22 @@ test("query time uses query prefix from record", async () => {
   await semanticSearch(join(root, ".brainpick"), [], "kuu");
   expect(seen).toEqual(["search_query: kuu"]);
 });
+
+test("chunk evidence starts at a whole line", async () => {
+  // a semantic hit's snippet is evidence, not a byte offset: a later chunk opens
+  // mid-line (the overlap is cut by characters), so its partial first line goes; the
+  // first chunk's heading lines add nothing the hit does not already name
+  const { chunkEvidence } = await import("../src/query/vectors");
+  const later = "nousee), tekijä on\n* **15:15** `nero` · learning — rules calibrated\n";
+  expect(chunkEvidence(later, 1)).toBe("* **15:15** `nero` · learning — rules calibrated");
+  const first = "# 2026-09-08\n\n## 2026-09-08\n\n* **23:00** `pipeless` · debug — SHAI-127 fixed\n";
+  expect(chunkEvidence(first, 0)).toBe("* **23:00** `pipeless` · debug — SHAI-127 fixed");
+  // a chunk opening inside an entry's continuation lines jumps to the next entry
+  const inside = "partial\n  more continuation of the previous entry\n* **16:00** `x` · note — next entry\n  its detail\n";
+  expect(chunkEvidence(inside, 2)).toBe("* **16:00** `x` · note — next entry its detail");
+  // prose stays prose: a list far down the chunk does not hijack the snippet
+  const prose = "Prose line one.\n" + "x".repeat(500) + "\n- a late item\n";
+  expect(chunkEvidence(prose, 0)!.startsWith("Prose line one. xxx")).toBe(true);
+  expect(chunkEvidence("tail of a sentence", 3)).toBe("tail of a sentence");
+  expect(chunkEvidence("   \n", 0)).toBeNull();
+});

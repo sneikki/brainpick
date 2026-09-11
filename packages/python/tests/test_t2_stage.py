@@ -320,3 +320,23 @@ def test_query_time_uses_query_prefix_from_record(kotiaurinko, counting, monkeyp
     monkeypatch.setattr(vectors_mod, "make_embedder", lambda *a, **k: Capturing())
     vectors_mod.semantic_search(kotiaurinko / ".brainpick", [], "kuu")
     assert seen == ["search_query: kuu"]
+
+
+def test_chunk_evidence_starts_at_a_whole_line():
+    """A semantic hit's snippet is evidence, not a byte offset: a later chunk opens
+    mid-line (the overlap is cut by characters), so its partial first line goes; the
+    first chunk's heading lines add nothing the hit does not already name."""
+    from brainpick.query import vectors as vectors_mod
+
+    later = "nousee), tekijä on\n* **15:15** `nero` · learning — rules calibrated\n"
+    assert vectors_mod.chunk_evidence(later, 1) == "* **15:15** `nero` · learning — rules calibrated"
+    first = "# 2026-09-08\n\n## 2026-09-08\n\n* **23:00** `pipeless` · debug — SHAI-127 fixed\n"
+    assert vectors_mod.chunk_evidence(first, 0) == "* **23:00** `pipeless` · debug — SHAI-127 fixed"
+    # a chunk opening inside an entry's continuation lines jumps to the next entry
+    inside = "partial\n  more continuation of the previous entry\n* **16:00** `x` · note — next entry\n  its detail\n"
+    assert vectors_mod.chunk_evidence(inside, 2) == "* **16:00** `x` · note — next entry its detail"
+    # prose stays prose: a list far down the chunk does not hijack the snippet
+    prose = "Prose line one.\n" + "x" * 500 + "\n- a late item\n"
+    assert vectors_mod.chunk_evidence(prose, 0).startswith("Prose line one. xxx")
+    assert vectors_mod.chunk_evidence("tail of a sentence", 3) == "tail of a sentence"
+    assert vectors_mod.chunk_evidence("   \n", 0) is None

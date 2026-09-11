@@ -247,7 +247,7 @@ program
     let target;
     if (brainSet.federated) {
       target = brainSet;
-      refusal = brainSet.brains.every((b) => loadConfig(b.root).serve.writes === "off") ? WRITES_OFF_REFUSAL : null;
+      refusal = brainSet.brains.every((b) => b.loadConfig().serve.writes === "off") ? WRITES_OFF_REFUSAL : null;
     } else {
       target = await brainSet.stateFor(brainSet.brains[0]!);
       refusal = target.config.serve.writes === "off" ? WRITES_OFF_REFUSAL : null;
@@ -269,16 +269,44 @@ function emit(result: { out?: string; err?: string }): void {
 }
 
 program
-  .command("search <query>")
+  .command("search [query]")
   .description("search the compiled brain (the brain_search tool, in the terminal)")
+  .option("--situation <text>", "the episode in sentences — the semantic engine's input")
+  .option("--terms <ids...>", "identifiers verbatim — the keyword engine's input")
+  .option("--session <id>", "log this query raw under this session id (spec/70 query log)")
   .option("--mode <mode>", "auto | keyword | semantic | graph (unknown falls back to auto)", "auto")
   .option("--limit <n>", "max hits (default: 8)", intOption, 8)
   .option("--root <path>", "bundle root (default: current directory)", ".")
   .option("--json", "print the raw MCP payload as JSON")
-  .action(async (query: string, opts: { mode: string; limit: number; root: string; json?: boolean }) => {
-    const { searchMirror } = await import("./query/mirrors");
-    emit(await searchMirror(resolve(opts.root), query, opts.mode, opts.limit, Boolean(opts.json)));
-  });
+  .action(
+    async (
+      query: string | undefined,
+      opts: {
+        situation?: string;
+        terms?: string[];
+        session?: string;
+        mode: string;
+        limit: number;
+        root: string;
+        json?: boolean;
+      },
+    ) => {
+      const { searchMirror } = await import("./query/mirrors");
+      const twoInput = opts.situation !== undefined || (opts.terms !== undefined && opts.terms.length > 0);
+      emit(
+        await searchMirror(
+          resolve(opts.root),
+          query ?? null,
+          opts.mode,
+          opts.limit,
+          Boolean(opts.json),
+          twoInput ? opts.terms ?? [] : null,
+          twoInput ? opts.situation ?? "" : null,
+          opts.session ?? null,
+        ),
+      );
+    },
+  );
 
 program
   .command("read <doc>")

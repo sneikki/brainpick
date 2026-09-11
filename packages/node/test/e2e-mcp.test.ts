@@ -75,7 +75,7 @@ test("mcp stdio roundtrip", { timeout: 120_000 }, async () => {
     expect(overview.counts.docs).toBe(10);
     expect(overview.hint).toBeTruthy();
 
-    const search = await call(client, "brain_search", { query: "aurinko" });
+    const search = await call(client, "brain_search", { situation: "the star at the centre", terms: ["aurinko"] });
     expect(search.hits.map((h: { path: string }) => h.path)).toContain("aurinko.md");
     expect(search.used_modes).toEqual(["keyword"]);
 
@@ -152,12 +152,12 @@ test("mcp semantic search over mock vectors", { timeout: 120_000 }, async () => 
   expect(manifest.tiers.t2).toBe("fresh");
 
   await withSession(root, async (client) => {
-    const semantic = await call(client, "brain_search", { query: "kuu vuorovesi maa", mode: "semantic" });
+    const semantic = await call(client, "brain_search", { situation: "kuu vuorovesi maa", terms: [], mode: "semantic" });
     expect(semantic.used_modes).toEqual(["semantic"]);
     expect(semantic.degraded_from).toBeNull();
     expect(semantic.hits.length).toBeGreaterThan(0);
 
-    const fused = await call(client, "brain_search", { query: "aurinko", mode: "auto" });
+    const fused = await call(client, "brain_search", { situation: "the star at the centre", terms: ["aurinko"], mode: "auto" });
     expect(fused.used_modes).toEqual(["keyword", "semantic"]);
     expect(fused.degraded_from).toBeNull();
     expect(fused.hits.map((h: { path: string }) => h.path)).toContain("aurinko.md");
@@ -187,7 +187,8 @@ test("mcp t3 entity queries", { timeout: 120_000 }, async () => {
     expect(neighbors.edges).toContainEqual({ src: "kuu", dst: "vuorovesi" });
 
     const orbits = await call(client, "brain_search", {
-      query: "what orbits the star",
+      situation: "what orbits the star",
+      terms: [],
       mode: "graph",
       limit: 4,
     });
@@ -229,11 +230,11 @@ test("mcp stdio federated", { timeout: 120_000 }, async () => {
     expect(overview.brains[1].role).toBe("user");
     expect(overview.bundle).toBe("aurinko");
 
-    const search = await call(client, "brain_search", { query: "kuu", mode: "keyword" });
+    const search = await call(client, "brain_search", { situation: "the moon", terms: ["kuu"], mode: "keyword" });
     expect(new Set(search.hits.map((h: { brain: string }) => h.brain))).toEqual(new Set(["aurinko", "kirja"]));
     expect(search.searched).toEqual(["aurinko", "kirja"]);
 
-    const scoped = await call(client, "brain_search", { query: "kuu", scope: "me" });
+    const scoped = await call(client, "brain_search", { situation: "the moon", terms: ["kuu"], scope: "me" });
     expect(new Set(scoped.hits.map((h: { brain: string }) => h.brain))).toEqual(new Set(["kirja"]));
 
     const read = await call(client, "brain_read", { doc: "kirja:kahvi.md" });

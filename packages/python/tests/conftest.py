@@ -63,3 +63,8 @@ def prepend_path(env_path: str, bin_dir: Path) -> str:
     CI-2: the existing call sites hardcoded `:`, invisible-broken on
     Windows (`;`) even once the fake executable itself was fixed."""
     return f"{bin_dir}{os.pathsep}{env_path}"
+
+
+# the query log (spec/70) writes under XDG state by default; tests and their spawned
+# servers log into a scratch dir instead of the developer's own
+os.environ.setdefault("BRAINPICK_QUERY_LOG_DIR", str(Path(__file__).resolve().parent / ".query-log-scratch"))

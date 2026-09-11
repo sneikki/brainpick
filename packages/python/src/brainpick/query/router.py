@@ -70,68 +70,93 @@ def ensure_titles(hits: list[dict], title_hits: list[dict], limit: int) -> list[
     return (missing + hits)[:limit]
 
 
+def split_query(query: str | None, terms: list[str] | None, situation: str | None) -> tuple[str, str, str]:
+    """(keyword query, semantic query, title query) — spec/50 two-input search.
+
+    `situation` (the episode in sentences) is the only text the semantic engine sees:
+    an identifier list embeds to nothing useful. The keyword engine sees `terms`
+    (identifiers, verbatim) AND the situation — a sentence costs BM25 only some
+    function-word noise, and its nouns still match. A bare `query` feeds both, the
+    legacy single-string shape. The title query is everything."""
+    if terms is None and situation is None:
+        q = str(query or "")
+        return q, q, q
+    ids = " ".join(str(t) for t in (terms or []) if str(t).strip()).strip()
+    sem = str(situation or "").strip()
+    both = " ".join(part for part in (ids, sem) if part)
+    return both, sem, both
+
+
 def run_search(
     records: list[dict],
     tiers: dict,
-    query: str,
+    query: str | None = None,
     mode: str = "auto",
     limit: int = 8,
     semantic_fn: SemanticFn | None = None,
     graph_fn: GraphFn | None = None,
     link_graph: dict | None = None,
+    terms: list[str] | None = None,
+    situation: str | None = None,
 ) -> dict:
     """The spec/50 response body: {"hits", "used_modes", "degraded_from"}.
 
-    `semantic_fn(query, limit)` runs the vector retriever; `graph_fn(query, limit)`
-    runs the T3 entity-graph retriever (present iff the export loaded). Callers
-    wire them to query.vectors.semantic_search and kg.graph_search. Any tier's
-    trouble downgrades the answer with a marker, never errors the call.
+    Two inputs, two engines: `situation` alone goes to the semantic retriever, the
+    keyword retriever gets `terms` plus the situation (a legacy `query` goes to both). `semantic_fn(query, limit)` runs
+    the vector retriever; `graph_fn(query, limit)` runs the T3 entity-graph retriever
+    (present iff the export loaded). Callers wire them to query.vectors.semantic_search
+    and kg.graph_search. Any tier's trouble downgrades the answer with a marker, never
+    errors the call. Terms without a situation is a keyword search; a situation
+    without terms still runs both engines.
     """
     resolved = resolve_mode(mode)
     t2_fresh = tiers.get("t2") == "fresh" and semantic_fn is not None
     t3_on = graph_fn is not None
+    kw_query, sem_query, title_query = split_query(query, terms, situation)
+    # the keyword engine's fallback text when it has no terms of its own
+    kw_or_sem = kw_query or sem_query
 
     if resolved == "keyword":
-        return _body(keyword_search(records, query, limit=limit), ["keyword"], None)
+        return _body(keyword_search(records, kw_or_sem, limit=limit), ["keyword"], None)
     if resolved == "graph":
         if t3_on:
-            return _body(graph_fn(query, limit), ["graph"], None)
+            return _body(graph_fn(sem_query or kw_query, limit), ["graph"], None)
         # T3 absent: degrade to a T1 link-walk over keyword hits (spec/40)
         from brainpick.kg import link_walk_search
 
-        hits = (link_walk_search(link_graph, records, query, limit) if link_graph
-                else keyword_search(records, query, limit=limit))
+        hits = (link_walk_search(link_graph, records, kw_or_sem, limit) if link_graph
+                else keyword_search(records, kw_or_sem, limit=limit))
         return _body(hits, ["keyword"], "graph")
 
     semantic_hits: list[dict] | None = None
-    if t2_fresh:
+    if t2_fresh and sem_query:
         try:
-            semantic_hits = semantic_fn(query, limit)
+            semantic_hits = semantic_fn(sem_query, limit)
         except Exception:
             semantic_hits = None  # degrade below; T2 trouble must never error a search
 
     # A doc the query NAMES by title is surfaced in every retrieval mode — vectors miss
     # short/technical title words, and RRF can bury a strong keyword title hit, so this
     # guarantees the named page never goes missing (only injected when actually absent).
-    title_hits = title_search(records, query, limit)
+    title_hits = title_search(records, title_query, limit)
 
     if resolved == "semantic":
         if semantic_hits is None:
-            return _body(keyword_search(records, query, limit=limit), ["keyword"], "semantic")
+            return _body(keyword_search(records, sem_query or kw_query, limit=limit), ["keyword"], "semantic")
         return _body(ensure_titles(semantic_hits, title_hits, limit), ["semantic"], None)
 
     # auto: fuse whatever is available (spec/30: RRF k=60, dedupe by document).
     # The entity graph joins only for relation-shaped queries (spec/40).
-    keyword_hits = keyword_search(records, query, limit=limit)
-    rankings: dict[str, list[dict]] = {"keyword": keyword_hits}
+    rankings: dict[str, list[dict]] = {"keyword": keyword_search(records, kw_or_sem, limit=limit)}
     if semantic_hits is not None:
         rankings["semantic"] = semantic_hits
-    if t3_on and is_relational(query):
-        rankings["graph"] = graph_fn(query, limit)
+    if t3_on and is_relational(sem_query or kw_query):
+        rankings["graph"] = graph_fn(sem_query or kw_query, limit)
 
-    degraded_from = "semantic" if semantic_hits is None else None
-    if len(rankings) == 1:  # keyword alone — the honest degradation is still "semantic"
-        return _body(ensure_titles(keyword_hits, title_hits, limit), ["keyword"], degraded_from)
+    degraded_from = "semantic" if semantic_hits is None and sem_query else None
+    if len(rankings) == 1:
+        only = next(iter(rankings))
+        return _body(ensure_titles(rankings[only], title_hits, limit), [only], degraded_from)
     used_modes = [mode for mode in ("keyword", "semantic", "graph") if mode in rankings]
     return _body(ensure_titles(rrf_fuse(rankings, limit), title_hits, limit), used_modes, degraded_from)
 

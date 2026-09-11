@@ -24,7 +24,8 @@ enters the brain unvalidated. The flow is deliberately boring:
 3. On violation: roll back and return henxels' instruction *verbatim* — the
    agent gets steering ("one concept per page, `type` from this list"), not
    a stack trace.
-4. On pass: bump the `timestamp` frontmatter, trigger an incremental run of
+4. On pass: bump the `timestamp` frontmatter (a doc with no frontmatter block,
+   such as a journal or a reserved `index.md`/`log.md`, is left as written), trigger an incremental run of
    the [compile pipeline](compile-pipeline.md), and broadcast the change
    over [live deltas](live-deltas.md) — a remote agent's accepted write
    makes the [holographic brain](holographic-brain.md) visibly fire.

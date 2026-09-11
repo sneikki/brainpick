@@ -28,14 +28,48 @@ there are none), never subject to budget trimming (bounded size already).
 similarity-gap pairs — always present, `0` when T2 or the module is off,
 never budget-trimmed. Default budget 800.
 
-## brain_search({query, mode?, limit?, scope?, budget_tokens?})
+## brain_search({situation, terms, mode?, limit?, scope?, budget_tokens?})
 
-`mode ∈ auto|keyword|semantic|graph` (default `auto`). → `{"hits":
-[{"path", "title", "description", "score", "why"}], "used_modes",
-"degraded_from", "truncated", "hint"}`. Descriptions only — never full
-bodies. `why` is one clause naming the match reason. Default budget 1200.
+Two inputs, one per engine (spec/50): `situation` (required) is the episode in
+full sentences and feeds the semantic retriever; `terms` (required, may be `[]`)
+is a list of identifiers verbatim; the keyword retriever sees the terms and the
+situation, the semantic retriever only the situation (spec/50). Under `auto`
+both rankings are RRF-fused and deduped; `keyword` runs the keyword retriever
+alone, `semantic` the semantic one, `graph` the situation. There is no free-form `query` on the tool: an agent
+cannot search with one string and hope it suits both engines. Engines keep a
+`query` form of the payload for the CLI, REST and tests. Default `limit` 10.
+`mode ∈ auto|keyword|semantic|graph` (default `auto`). The tool description MUST tell the agent what each input wants: `keyword` an identifier verbatim (ticket id, error string, symbol, file name), `semantic` the situation in full sentences, and that an identifier plus a situation is two queries whose hits are unioned — `auto` fuses both engines over one string and suits only a string that fits both. → `{"hits":
+[{"path", "title", "description", "score", "why", "snippet"}], "used_modes",
+"degraded_from", "truncated", "hint"}`. Descriptions and snippets only —
+never full bodies. `why` is one clause naming the match reason; `snippet`
+is the retriever's evidence (≤ ~240 chars: the keyword window, or the
+nearest chunk from its first whole line for a semantic hit — the overlap's
+partial line and heading lines skipped, and a column-0 list item that starts
+near the top of the chunk opens it, so a log entry is shown from its head;
+`null` when there is none), so a
+long log-shaped doc such as a journal day names the entry that matched, not
+just its title. Default budget 1200.
+
+## The query log
+
+Every `brain_search` call is appended raw — one JSON line: `ts`, `brain`,
+`situation`, `terms`, `mode`, `limit`, `scope`, `used_modes`,
+`degraded_from`, `hits` (paths) — to one file per session,
+`<session_id>.jsonl`, under `$BRAINPICK_QUERY_LOG_DIR`, else
+`$XDG_STATE_HOME/brainpick/queries` (default `~/.local/state/brainpick/queries`).
+The session id is the server process's (one per agent session under stdio),
+or the one a CLI caller passes with `--session`. `BRAINPICK_QUERY_LOG=0`
+disables. Nothing is aggregated by the engine: the log exists so that "do
+agents search with sentences or with keyword lists" is answered from the
+record.
 
 ## brain_read({doc, sections?, budget_tokens?})
+
+`outline` lists the headings and, for a log-shaped doc, every entry head
+(`* **HH:MM** …`, trimmed to 120 chars). A `sections` item that is a time
+(`"05:30"`) returns that entry — the bullet with its continuation lines up
+to the next entry or heading — so a journal day is read one entry at a
+time, not 12k tokens at once.
 
 `doc` resolves forgivingly: exact path → unique file stem → fuzzy title;
 an ambiguous resolution returns `{"disambiguation": [{"path", "title"}]}`
@@ -53,18 +87,33 @@ leading excerpt + hint to request `sections`. Default budget 2000.
 
 ## brain_write({doc, content, mode?, base_sha?})
 
-`mode ∈ create|replace|append_section` (default `create`). The guarded
+`mode ∈ create|replace|append_section|add_entry` (default `create`). The guarded
 write path:
 
 1. Resolve `doc` to a bundle-relative kebab-case `.md` path (reject
    traversal outside the bundle).
 2. Write atomically (temp + rename), then run the bundle's henxels
-   contract against that path (when a contract exists).
+   contract against that path (when a contract governs the bundle — at its
+   root or in a directory above it, the way henxels itself resolves one).
 3. Violations → restore the previous state and return `{"ok": false,
    "instruction": "<henxels output verbatim>"}`.
-4. Pass → bump frontmatter `timestamp` (creating it if absent), trigger an
-   incremental compile, emit the delta. → `{"ok": true, "path", "seq",
-   "hint"}`.
+4. Pass → bump frontmatter `timestamp` (adding the key when the frontmatter
+   block lacks it; a doc with no frontmatter block — journals and the OKF
+   reserved `index.md`/`log.md` are frontmatter-free by contract — is left
+   untouched), trigger an incremental compile, emit the delta. →
+   `{"ok": true, "path", "seq", "hint"}`.
+
+**`add_entry`**: `content` is exactly ONE log entry — it MUST start with
+`* **HH:MM**` — and the server places it in the day file named by `doc`
+(newest first: after every entry with a later time, before the first with the
+same or an earlier one; a file without entries gets it after its head). A
+missing day file is created as `# <stem>` / `## <stem>` / the entry, and only
+when the stem is `YYYY-MM-DD`; any other shape returns `{"ok": false,
+"instruction"}` and writes nothing. The rest of the path (henxels, timestamp,
+recompile, `base_sha`) is unchanged. This exists because a day file is
+newest-first, so `append_section` cannot add to it and `replace` would make
+the writer echo the whole day back through the call — the lost-update and
+token cost that mode removes.
 
 **Optimistic concurrency (`base_sha`)**: writers SHOULD pass the sha256 of
 the doc content they last read (available from the manifest, `docs.jsonl`,

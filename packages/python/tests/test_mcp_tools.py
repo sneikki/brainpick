@@ -91,12 +91,24 @@ def test_overview_budget_trims_tree(kotiaurinko):
     assert tree_doc_count(slim) < tree_doc_count(full)
 
 
+def test_search_hits_carry_the_matched_snippet(kotiaurinko):
+    """A hit names WHERE in the doc the match is — the retriever's snippet (keyword
+    window or the nearest chunk's head) rides along, so a long log-shaped page such
+    as a journal day is not reduced to its title (spec/70)."""
+    state = make_state(kotiaurinko)
+    result = search_payload(state, "tides", mode="keyword")
+    top = result["hits"][0]
+    assert top["path"] == "kuu.md"
+    assert isinstance(top["snippet"], str) and "tides" in top["snippet"].lower()
+    assert len(top["snippet"]) <= 260
+
+
 def test_search_hits_have_why_not_bodies(kotiaurinko):
     result = search_payload(make_state(kotiaurinko), "aurinko")
     assert {h["path"] for h in result["hits"]} == {
         "aurinko.md", "komeetta.md", "planeetat.md", "yksinainen.md",
     }
-    assert set(result["hits"][0]) == {"path", "title", "description", "score", "why"}
+    assert set(result["hits"][0]) == {"path", "title", "description", "score", "why", "snippet"}
     assert result["used_modes"] == ["keyword"]
     assert result["degraded_from"] == "semantic"  # auto without T2 says so (spec/30)
     assert result["truncated"] is False
@@ -149,7 +161,7 @@ def test_search_semantic_hits_via_mock_vectors(kotiaurinko):
     assert semantic["used_modes"] == ["semantic"]
     assert semantic["degraded_from"] is None
     assert semantic["hits"]
-    assert all(set(h) == {"path", "title", "description", "score", "why"}
+    assert all(set(h) == {"path", "title", "description", "score", "why", "snippet"}
                for h in semantic["hits"])
     fused = search_payload(state, "aurinko", mode="auto")
     assert fused["used_modes"] == ["keyword", "semantic"]
@@ -313,6 +325,16 @@ def test_write_happy_path_bumps_seq_and_timestamp(kotiaurinko):
     assert "- [Uusi kivi](uusi-kivi.md)" in (kotiaurinko / "index.md").read_text(encoding="utf-8")
 
 
+def test_write_leaves_frontmatter_free_docs_without_a_timestamp_block(kotiaurinko):
+    """Journals and OKF reserved files carry no frontmatter by contract; a write that
+    passed henxels must not grow one on the way out (spec/70 step 4)."""
+    state = make_state(kotiaurinko)
+    journal = "# 2026-06-01\n\n## 2026-06-01\n\n* **08:00** `kuu` · note — tides logged.\n"
+    result = write_payload(state, "paivakirja/2026-06-01", journal)
+    assert result["ok"] is True
+    assert (kotiaurinko / "paivakirja" / "2026-06-01.md").read_text(encoding="utf-8") == journal
+
+
 def test_write_append_section(kotiaurinko):
     state = make_state(kotiaurinko)
     result = write_payload(state, "kuu.md", "## Nousuvesi\n\nSpring tides.\n", mode="append_section")
@@ -320,6 +342,47 @@ def test_write_append_section(kotiaurinko):
     text = (kotiaurinko / "kuu.md").read_text(encoding="utf-8")
     assert "## Nousuvesi" in text
     assert "The moon pulls" in text  # the original body survives
+
+
+def test_write_add_entry_slots_into_the_newest_first_day(kotiaurinko):
+    """mode add_entry (spec/70): one entry in, the server places it by time — a missing
+    day is created with its head, a later entry goes first, an earlier one after, and
+    the caller never echoes the day back."""
+    state = make_state(kotiaurinko)
+    day = kotiaurinko / "paivakirja" / "2026-06-02.md"
+    first = "* **09:00** `kuu` · note — first.\n  more.\n"
+    assert write_payload(state, "paivakirja/2026-06-02", first, mode="add_entry")["ok"] is True
+    assert day.read_text(encoding="utf-8") == "# 2026-06-02\n\n## 2026-06-02\n\n" + first
+    assert write_payload(state, "paivakirja/2026-06-02", "* **07:30** `kuu` · note — earlier.", mode="add_entry")["ok"] is True
+    assert write_payload(state, "paivakirja/2026-06-02", "* **11:15** `kuu` · note — later.", mode="add_entry")["ok"] is True
+    assert day.read_text(encoding="utf-8") == (
+        "# 2026-06-02\n\n## 2026-06-02\n\n"
+        "* **11:15** `kuu` · note — later.\n\n"
+        "* **09:00** `kuu` · note — first.\n  more.\n\n"
+        "* **07:30** `kuu` · note — earlier.\n"
+    )
+    bad = write_payload(state, "paivakirja/2026-06-02", "## Not an entry\n", mode="add_entry")
+    assert bad["ok"] is False and "HH:MM" in bad["instruction"]
+    page = write_payload(state, "muistio", "* **10:00** `kuu` · note — x", mode="add_entry")
+    assert page["ok"] is False and "YYYY-MM-DD" in page["instruction"]
+    assert not (kotiaurinko / "muistio.md").exists()
+
+
+def test_concurrent_add_entry_loses_nothing(kotiaurinko):
+    """Fifty threads add one entry each to the same day at once (spec/70: writes are
+    serialized server-side) — every entry lands, in time order, none overwritten."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    state = make_state(kotiaurinko)
+    def add(i: int):
+        return write_payload(state, "paivakirja/2026-06-03",
+                             f"* **{i // 60:02d}:{i % 60:02d}** `kuu` · note — entry {i}.", mode="add_entry")
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        results = list(pool.map(add, range(50)))
+    assert all(r["ok"] for r in results), [r for r in results if not r["ok"]][:3]
+    text = (kotiaurinko / "paivakirja" / "2026-06-03.md").read_text(encoding="utf-8")
+    times = [line[4:9] for line in text.splitlines() if line.startswith("* **")]
+    assert len(times) == 50 and times == sorted(times, reverse=True)
 
 
 def test_write_gate_refusal(kotiaurinko):
@@ -345,6 +408,21 @@ def test_write_henxels_violation_restores(kotiaurinko, monkeypatch, tmp_path):
     assert replaced["ok"] is False
     assert "tides" in (kotiaurinko / "kuu.md").read_text(encoding="utf-8")  # bytes restored
     assert state.seq == 1
+
+
+def test_write_honours_a_contract_above_the_bundle(kotiaurinko, monkeypatch, tmp_path):
+    """spec/80 layout: henxels.yaml at the repo root, the bundle below it. `auto` must
+    still run the contract — henxels resolves it by walking up, and so must we."""
+    (kotiaurinko.parent / "henxels.yaml").write_text("henxels: []\n", encoding="utf-8")
+    bin_dir = stage_fake_henxels(tmp_path / "bin", "kebab-case or bust")
+    monkeypatch.setenv("PATH", prepend_path(os.environ["PATH"], bin_dir))
+    state = make_state(kotiaurinko)
+    assert state.config.validate.henxels == "auto"
+
+    created = write_payload(state, "uusi.md", "# X\n")
+    assert created["ok"] is False
+    assert created["instruction"].strip() == "kebab-case or bust"
+    assert not (kotiaurinko / "uusi.md").exists()
 
 
 # -- brain_write optimistic concurrency (spec/70 base_sha) --------------------------
@@ -530,3 +608,46 @@ def test_brain_show_registered_as_sixth_tool_even_when_writes_refused(kotiaurink
         "brain_overview", "brain_search", "brain_read",
         "brain_neighbors", "brain_write", "brain_show",
     }
+
+
+# -- journal entries as read units (spec/70) ------------------------------------------
+
+_DAY = ("# 2026-09-09\n\n## 2026-09-09\n\n"
+        "* **05:50** `pipeless` · debug — proof audits passed on version/229\n  audit details\n\n"
+        "* **05:30** `nuutti-brain` · feature — every harness wired\n  wiring details\n  more wiring\n\n"
+        "* **05:05** `pipeless` · debug — listing fallback stops early\n  listing details\n")
+
+
+def test_outline_lists_journal_entries_and_sections_take_a_time():
+    from brainpick.mcp_server import _extract_sections, _outline
+
+    outline = _outline(_DAY)
+    assert outline[:2] == ["# 2026-09-09", "## 2026-09-09"]
+    assert outline[2].startswith("* **05:50**") and len(outline) == 5
+    one = _extract_sections(_DAY, ["05:30"])
+    assert one == "* **05:30** `nuutti-brain` · feature — every harness wired\n  wiring details\n  more wiring\n"
+    two = _extract_sections(_DAY, ["05:50", "05:05"])
+    assert two.count("* **") == 2 and "05:30" not in two
+    assert _extract_sections(_DAY, ["## 2026-09-09"]).count("* **") == 3  # a heading still takes its whole section
+
+
+def test_query_log_writes_one_raw_line_per_search(tmp_path, monkeypatch):
+    import json
+
+    from brainpick.querylog import log_query, new_session_id
+
+    monkeypatch.setenv("BRAINPICK_QUERY_LOG_DIR", str(tmp_path))
+    sid = new_session_id()
+    request = {"situation": "the deploy failed on a sidecar race", "terms": ["FUSE"], "mode": "auto",
+               "limit": 10, "scope": None}
+    result = {"hits": [{"path": "journals/2026-09-09.md"}], "used_modes": ["keyword", "semantic"],
+              "degraded_from": None}
+    path = log_query(sid, "nuutti-brain", request, result)
+    log_query(sid, "nuutti-brain", request, result)
+    assert path == tmp_path / f"{sid}.jsonl"
+    lines = [json.loads(line) for line in path.read_text().splitlines()]
+    assert len(lines) == 2
+    assert lines[0]["situation"] == request["situation"] and lines[0]["terms"] == ["FUSE"]
+    assert lines[0]["hits"] == ["journals/2026-09-09.md"] and lines[0]["used_modes"] == ["keyword", "semantic"]
+    monkeypatch.setenv("BRAINPICK_QUERY_LOG", "0")
+    assert log_query(sid, "nuutti-brain", request, result) is None

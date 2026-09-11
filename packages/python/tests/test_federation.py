@@ -152,6 +152,34 @@ def test_explicit_roots_win_and_take_alias_prefixes(tmp_path):
     assert [(b.alias, b.root) for b in brains] == [("sun", a.resolve()), ("kotikirja", k.resolve())]
 
 
+def test_repo_root_config_governs_a_bundle_below_it(tmp_path):
+    """spec/80: brainpick.toml at the repo root with `[bundle] root = "_brain"`. The
+    server must read THAT config for the bundle — validate, exclude, serve.writes —
+    not the defaults it finds by looking for a config inside the bundle."""
+    repo = tmp_path / "repo"
+    copy_bundle(tmp_path, "kotiaurinko", under="repo/_brain")
+    (repo / "brainpick.toml").write_text(
+        '[bundle]\nroot = "_brain"\n\n[validate]\nhenxels = "never"\n', encoding="utf-8")
+
+    brain_set = resolve_brain_set([str(repo)], cwd=tmp_path, registry_path=tmp_path / "none.toml")
+    brain = brain_set.brains[0]
+    assert brain.root == (repo / "_brain").resolve() and brain.config_root == repo.resolve()
+    assert brain.load_config().validate.henxels == "never"
+    state = brain_set.state_for(brain)
+    assert state.root == brain.root and state.config.validate.henxels == "never"
+
+    # cwd inside the bundle: the marker at the repo root is `here`, and it governs the same bundle
+    here_set = resolve_brain_set([], cwd=repo / "_brain" / "saaret", registry_path=tmp_path / "none.toml")
+    assert [(b.root, b.config_root, b.here) for b in here_set.brains] == [(brain.root, repo.resolve(), True)]
+
+    # the registry remembers repo + bundle_path: the same config root comes back
+    registry = tmp_path / "brains.toml"
+    register_brain(repo / "_brain", registry, alias="sun")
+    reg_set = resolve_brain_set([], cwd=tmp_path / "elsewhere", registry_path=registry)
+    assert [(b.alias, b.root, b.config_root) for b in reg_set.brains] == [("sun", brain.root, repo.resolve())]
+    assert reg_set.state_for(reg_set.brains[0]).config.validate.henxels == "never"
+
+
 def test_registry_union_here_orders_here_then_user_then_rest(tmp_path):
     registry = tmp_path / "brains.toml"
     here = copy_bundle(tmp_path, "kotiaurinko", under="here")

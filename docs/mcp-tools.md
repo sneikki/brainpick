@@ -23,7 +23,7 @@ what to call next.
    document/tag/entity counts, tier availability, the top-level index tree
    with one-sentence descriptions, and usage hints — plus the list of brains
    when several sit behind one server. The progressive-disclosure root.
-2. **`brain_search({query, mode?, limit?, scope?, budget_tokens?})`** —
+2. **`brain_search({situation, terms, mode?, limit?, scope?, budget_tokens?})`** — two inputs, one per engine: `situation` in sentences for the semantic retriever, `terms` (identifiers verbatim) for the keyword one, rankings fused;
    returns titles and descriptions only, never full documents, each hit
    annotated with *why* it matched. Modes are described in
    [search modes](search-modes.md); `scope` picks brains under

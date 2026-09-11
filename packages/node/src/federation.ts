@@ -14,6 +14,7 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
 
 import { generateBundleId, loadConfig } from "./config";
+import type { Config } from "./config";
 import { atomicWrite } from "./core/fs";
 import { findRepoRoot } from "./detect";
 import { brainpickCommand } from "./scaffold";
@@ -214,7 +215,11 @@ function isDir(path: string): boolean {
 /** Where a registry entry's bundle lives on THIS machine: a local repo directly,
  * a remote one from its daemon clone — null when that clone does not exist
  * (federation never clones). */
-export function entryRoot(entry: RegistryEntry, env: Env = process.env): string | null {
+/** [config root, bundle root] of a registry entry on THIS machine: a local repo
+ * directly, a remote one from its daemon clone — null when that clone does not
+ * exist (federation never clones). The config root is where the governing
+ * brainpick.toml lives (spec/80): the bundle itself, or a repo root above it. */
+export function entryPaths(entry: RegistryEntry, env: Env = process.env): [string, string] | null {
   const repo = entry.repo;
   const base = isLocalRepo(repo)
     ? repo.startsWith("~")
@@ -223,7 +228,13 @@ export function entryRoot(entry: RegistryEntry, env: Env = process.env): string 
     : join(dataDir(env), "brains", entry.id);
   const root = entry.bundle_path ? join(base, entry.bundle_path) : base;
   const resolved = canonical(root);
-  return isDir(resolved) ? resolved : null;
+  return isDir(resolved) ? [configRootOf(resolved), resolved] : null;
+}
+
+/** The bundle root of a registry entry on this machine (see entryPaths). */
+export function entryRoot(entry: RegistryEntry, env: Env = process.env): string | null {
+  const paths = entryPaths(entry, env);
+  return paths === null ? null : paths[1];
 }
 
 /** [repo, bundle_path] for a local bundle — the git repo above it when there is
@@ -291,6 +302,26 @@ export function isBundleRoot(path: string): boolean {
 }
 
 /** The nearest ancestor-or-self of cwd that is a bundle root (spec/75). */
+/** The bundle a config root governs: `root / [bundle] root` (spec/80). */
+function bundleOf(configRoot: string): string {
+  return canonical(configRoot, loadConfig(configRoot).bundle.root);
+}
+
+/** The config root that governs `bundle`: the nearest ancestor whose brainpick.toml
+ * names this bundle through `[bundle] root` (spec/80), else the bundle itself. A
+ * compiled bundle carries `.brainpick/`, so the marker walk stops there even when
+ * the repo-root config above it is the one that governs it. */
+export function configRootOf(bundle: string): string {
+  if (existsSync(join(bundle, "brainpick.toml"))) return bundle;
+  let candidate = bundle;
+  for (;;) {
+    const parent = dirname(candidate);
+    if (parent === candidate) return bundle;
+    if (existsSync(join(parent, "brainpick.toml"))) return bundleOf(parent) === bundle ? parent : bundle;
+    candidate = parent;
+  }
+}
+
 export function discoverHere(cwd: string): string | null {
   let candidate = canonical(cwd);
   for (;;) {
@@ -306,6 +337,8 @@ export interface BrainInit {
   root: string;
   role?: string | null;
   here?: boolean;
+  /** where brainpick.toml lives when the bundle sits below it (spec/80) */
+  configRoot?: string | null;
 }
 
 export class Brain {
@@ -313,6 +346,7 @@ export class Brain {
   readonly root: string;
   readonly role: string | null;
   readonly here: boolean;
+  readonly configRoot: string | null;
   state: ServeState | null = null;
 
   constructor(init: BrainInit) {
@@ -320,6 +354,14 @@ export class Brain {
     this.root = canonical(init.root);
     this.role = init.role ?? null;
     this.here = init.here ?? false;
+    this.configRoot = init.configRoot ? canonical(init.configRoot) : null;
+  }
+
+  /** The config that governs this bundle — read at the config root, not the bundle
+   * root, so a repo-root brainpick.toml with `[bundle] root` is honoured by every
+   * server-side path (validate, exclude, index mode, serve.writes). */
+  loadConfig(): Config {
+    return loadConfig(this.configRoot ?? this.root);
   }
 
   get loaded(): boolean {
@@ -372,7 +414,7 @@ export class BrainSet {
   /** The brain's ServeState — compiled if stale, loaded once, then held. */
   async stateFor(brain: Brain): Promise<ServeState> {
     if (brain.state === null) {
-      const state = new ServeState(brain.root, loadConfig(brain.root));
+      const state = new ServeState(brain.root, brain.loadConfig());
       await state.load();
       brain.state = state;
     }
@@ -468,29 +510,36 @@ export interface ResolveOptions {
 export function resolveBrainSet(roots: string[], options: ResolveOptions = {}): BrainSet {
   const cwd = canonical(options.cwd ?? process.cwd());
   const env = options.env ?? process.env;
+  // the marker (brainpick.toml / .brainpick) may sit at a repo root above the bundle
+  // (spec/80), so `here` is a config root and the bundle it governs is resolved from it
+  const marker = discoverHere(cwd);
+  const here = marker === null ? null : configRootOf(bundleOf(marker));
+  const hereBundle = here === null ? null : bundleOf(here);
   if (roots.length > 0) {
-    const hereRoot = discoverHere(cwd);
     return new BrainSet(
       roots.map((arg) => {
         const [alias, path] = parseRootArg(arg);
-        const root = canonical(cwd, path);
-        return new Brain({ alias, root, here: root === hereRoot });
+        const configRoot = canonical(cwd, path);
+        const root = bundleOf(configRoot); // --root may be a repo root above the bundle (spec/80)
+        return new Brain({ alias, root, here: root === hereBundle, configRoot });
       }),
     );
   }
 
-  const here = discoverHere(cwd);
   const brains: Brain[] = [];
   for (const entry of loadRegistry(options.registryPath ?? registryPath(env))) {
     if (entry.enabled === false) continue;
-    const root = entryRoot(entry, env);
-    if (root === null) continue;
+    const paths = entryPaths(entry, env);
+    if (paths === null) continue;
+    const [configRoot, root] = paths;
     // a registry brain whose root contains cwd IS here (spec/75) — marker or not
-    const isHere = here === null ? isWithin(cwd, root) : root === here || isWithin(here, root);
+    const isHere = hereBundle === null ? isWithin(cwd, root) : root === hereBundle || isWithin(hereBundle, root);
     const alias = entry.alias || aliasForRepo(entry.repo);
-    brains.push(new Brain({ alias, root, role: entry.role ?? null, here: isHere }));
+    brains.push(new Brain({ alias, root, role: entry.role ?? null, here: isHere, configRoot }));
   }
-  if (here !== null && !brains.some((b) => b.here)) brains.unshift(new Brain({ alias: null, root: here, here: true }));
+  if (here !== null && !brains.some((b) => b.here)) {
+    brains.unshift(new Brain({ alias: null, root: hereBundle!, here: true, configRoot: here }));
+  }
   if (brains.length === 0) return new BrainSet([new Brain({ alias: null, root: cwd, here: true })]);
   const rank = (b: Brain) => (b.here ? 0 : b.role === "user" ? 1 : 2);
   const ordered = brains.map((b, i) => [b, i] as const).sort((x, y) => rank(x[0]) - rank(y[0]) || x[1] - y[1]);

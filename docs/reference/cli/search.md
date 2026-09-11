@@ -2,14 +2,15 @@
 type: reference
 about: thing
 title: "brainpick search"
-description: "Search the compiled brain from the terminal — the brain_search tool as a CLI verb, with --mode, --limit and --json."
+description: "Search the compiled brain from the terminal — the brain_search tool as a CLI verb: --situation and --terms (or a single legacy query), --mode, --limit and --json."
 tags: [cli, spec]
 timestamp: 2026-07-10T18:30:00Z
 ---
 
 # brainpick search
 
-`brainpick search QUERY [--root DIR]` runs `brain_search` in the terminal,
+`brainpick search --situation "…" --terms ID… [--root DIR]` (or the legacy
+`brainpick search QUERY`, one string seen by both engines) runs `brain_search` in the terminal,
 against the compiled brain, read-only (it never compiles). It returns titles
 and descriptions with a match reason — never full bodies.
 

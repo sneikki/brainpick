@@ -55,6 +55,8 @@ def present_search(payload: dict, query: str) -> str:
         desc = f" — {hit['description']}" if hit.get("description") else ""
         why = f"  ({hit['why']})" if hit.get("why") else ""
         lines.append(f"  {hit['path']}  {hit['title']}{desc}{why}")
+        if hit.get("snippet"):
+            lines.append(f"      ↳ {hit['snippet']}")
     if not hits:
         lines.append("  (no hits — try `overview` for the whole brain)")
     return "\n".join(lines)

@@ -35,6 +35,47 @@ match window ≤ 240 chars, or `null`. A hit's `source` names the retriever
 that produced it (`keyword | semantic | graph`; under fusion, the
 highest-contributing one).
 
+## Keyword units, stopwords and the entry-anchored snippet
+
+The keyword retriever's unit is the ENTRY, not the document, for a log-shaped
+document: a document with two or more column-0 `* ` list items is split at
+those items and each entry is scored as its own BM25 unit (own term
+frequencies, own length; document frequencies and the average length are
+over units), while any other document is one unit. A document's score is its
+best unit's score and its snippet is that unit's, so a journal day with sixty
+entries is sixty short documents to the ranker, not one long one, and the
+entry ABOUT a phrase outranks the entry that merely cites it. The hit shape
+is unchanged (one hit per document, deduped by path). Fixtures without
+log-shaped documents rank byte-identically to the document-unit ranking.
+
+The keyword retrievers drop a closed list of English function words from
+the QUERY (`STOPWORDS` in `query/keyword.py` and `query/keyword.ts`, the same
+list in both engines); documents are indexed whole. Not a frequency
+threshold: a fixed list, so a sentence-shaped query no longer matches every
+document on "the" and "and", and a query made only of stopwords finds
+nothing. The query also drops the purely numeric fragments of its compound
+identifiers (`SHAI-127` contributes `shai` and `shai-127`, not `127`;
+`2026-09-09-soniox-spec.md` contributes the compound and its words, not
+`2026` and `09`), so a date-prefixed file name does not match every document
+titled by a day of that month; a bare number that is no compound's fragment
+(`40002`) stays a term. The keyword snippet opens at the head of the entry that contains
+the first match within the unit (the last column-0 `* ` within 4000
+characters before it, or the unit's start when it is an entry), otherwise 60
+characters before the match.
+
+## Two-input search
+
+A search has two inputs. `situation` (the episode in sentences) is the only
+text the semantic retriever sees — an identifier list embeds to nothing useful.
+The keyword retriever sees `terms` (identifiers verbatim — ticket ids, error
+strings, symbols, file names) and the situation: a sentence costs BM25 only
+function-word noise, and its nouns still match. The title retriever sees both.
+A legacy single `query` feeds both retrievers. Terms without a situation is a
+keyword search; a situation without terms still runs both engines. Rationale, measured 2026-09-09 on a
+175-doc brain: keyword found identifiers 11/11 and paraphrases 8/15, semantic
+found paraphrases 13/15 and identifiers 6/11 — a string that suits one engine
+starves the other, so the engines take separate inputs and fuse the rankings.
+
 ## Doc versions (the file-level Time Machine — spec/90's other half)
 
 `GET /api/docs/{path}?at=<sha>` serves the doc AS OF a commit, read straight
@@ -108,5 +149,9 @@ Search scoring (normative for conformance): BM25 (k1=1.2, b=0.75) over
 repeated three times, the `description` twice, and `text` once, joined by
 newlines — a deterministic field weighting both runtimes reproduce
 trivially — lowercased, tokenized on Unicode non-alphanumeric boundaries
-(`_` is a boundary). Reserved documents are excluded from search results.
+(`_` is a boundary); in addition a run of such tokens joined by single `-`
+or `_` characters is emitted whole, after its parts (`SAI-PIPELESS-V`,
+`identity_authorized_bc_id`), so an identifier matches as itself and not
+only as the common words it is built from. Reserved documents are excluded
+from search results.
 Conformance asserts the top-k result SET, not scores.

@@ -188,14 +188,24 @@ def save_registry(entries: list[dict], path: str | Path | None = None) -> None:
     _atomic_write(path, render_registry(entries).encode("utf-8"))
 
 
-def entry_root(entry: dict, env: dict | None = None) -> Path | None:
-    """Where a registry entry's bundle lives on THIS machine: a local repo directly,
-    a remote one from its daemon clone — None when that clone does not exist
-    (federation never clones)."""
+def entry_paths(entry: dict, env: dict | None = None) -> tuple[Path, Path] | None:
+    """(config root, bundle root) of a registry entry on THIS machine: a local repo
+    directly, a remote one from its daemon clone — None when that clone does not
+    exist (federation never clones). The config root is where the governing
+    brainpick.toml lives (spec/80): the bundle itself, or a repo root above it."""
     repo = entry["repo"]
     base = Path(repo).expanduser() if is_local_repo(repo) else data_dir(env) / "brains" / entry["id"]
     root = base / entry["bundle_path"] if entry.get("bundle_path") else base
-    return root.resolve() if root.is_dir() else None
+    if not root.is_dir():
+        return None
+    root = root.resolve()
+    return config_root_of(root, env), root
+
+
+def entry_root(entry: dict, env: dict | None = None) -> Path | None:
+    """The bundle root of a registry entry on this machine (see entry_paths)."""
+    paths = entry_paths(entry, env)
+    return None if paths is None else paths[1]
 
 
 def _split_root(root: Path) -> tuple[str, str]:
@@ -263,6 +273,21 @@ def is_bundle_root(path: Path) -> bool:
     return (path / "brainpick.toml").is_file() or (path / ".brainpick").is_dir()
 
 
+def config_root_of(bundle: Path, env: dict | None = None) -> Path:
+    """The config root that governs `bundle`: the nearest ancestor whose brainpick.toml
+    names this bundle through `[bundle] root` (spec/80), else the bundle itself. A
+    compiled bundle carries `.brainpick/`, so the marker walk stops there even when
+    the repo-root config above it is the one that governs it."""
+    from brainpick.config import resolve_bundle
+
+    if (bundle / "brainpick.toml").is_file():
+        return bundle
+    for ancestor in bundle.parents:
+        if (ancestor / "brainpick.toml").is_file():
+            return ancestor if resolve_bundle(ancestor, env)[0] == bundle else bundle
+    return bundle
+
+
 def discover_here(cwd: str | Path) -> Path | None:
     """The nearest ancestor-or-self of cwd that is a bundle root (spec/75)."""
     path = Path(cwd).resolve()
@@ -278,10 +303,21 @@ class Brain:
     root: Path
     role: str | None = None
     here: bool = False
+    config_root: Path | None = None  # where brainpick.toml lives when the bundle sits below it (spec/80)
     state: object = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         self.root = Path(self.root).resolve()
+        if self.config_root is not None:
+            self.config_root = Path(self.config_root).resolve()
+
+    def load_config(self):
+        """The config that governs this bundle — read at the config root, not the
+        bundle root, so a repo-root brainpick.toml with `[bundle] root` is honoured
+        by every server-side path (validate, exclude, index mode, serve.writes)."""
+        from brainpick.config import load_config
+
+        return load_config(self.config_root or self.root)
 
     @property
     def loaded(self) -> bool:
@@ -320,10 +356,9 @@ class BrainSet:
     def state_for(self, brain: Brain):
         """The brain's ServeState — compiled if stale, loaded once, then held."""
         if brain.state is None:
-            from brainpick.config import load_config
             from brainpick.serve.state import ServeState
 
-            state = ServeState(brain.root, load_config(brain.root))
+            state = ServeState(brain.root, brain.load_config())
             state.load()
             brain.state = state
         return brain.state
@@ -404,29 +439,37 @@ def resolve_brain_set(roots: list[str], cwd: str | Path | None = None,
     from brainpick.config import resolve_bundle
 
     cwd = Path.cwd() if cwd is None else Path(cwd)
+    # the marker (brainpick.toml / .brainpick) may sit at a repo root above the bundle
+    # (spec/80), so `here` is a config root and the bundle it governs is resolved from it
+    here = discover_here(cwd)
+    if here is not None:
+        here = config_root_of(resolve_bundle(here, env)[0], env)
+    here_bundle = resolve_bundle(here, env)[0] if here is not None else None
     if roots:
         brains = []
         for arg in roots:
             alias, path = _parse_root_arg(arg)
-            root, _ = resolve_bundle(cwd / path, env)  # --root may be a repo root above the bundle (spec/80)
-            brains.append(Brain(alias=alias, root=root, here=(root == discover_here(cwd))))
+            config_root = (cwd / path).resolve()
+            root, _ = resolve_bundle(config_root, env)  # --root may be a repo root above the bundle (spec/80)
+            brains.append(Brain(alias=alias, root=root, here=(root == here_bundle), config_root=config_root))
         return BrainSet(brains)
 
-    here = discover_here(cwd)
     brains: list[Brain] = []
     for entry in load_registry(registry_path):
         if not entry.get("enabled", True):
             continue
-        root = entry_root(entry, env)
-        if root is None:
+        paths = entry_paths(entry, env)
+        if paths is None:
             continue
+        config_root, root = paths
         # a registry brain whose root contains cwd IS here (spec/75) — marker or not
-        is_here = (cwd.resolve().is_relative_to(root) if here is None
-                   else root == here or here.is_relative_to(root))
+        is_here = (cwd.resolve().is_relative_to(root) if here_bundle is None
+                   else root == here_bundle or here_bundle.is_relative_to(root))
         alias = entry.get("alias") or alias_for_repo(entry["repo"])
-        brains.append(Brain(alias=alias, root=root, role=entry.get("role"), here=is_here))
+        brains.append(Brain(alias=alias, root=root, role=entry.get("role"), here=is_here,
+                            config_root=config_root))
     if here is not None and not any(b.here for b in brains):
-        brains.insert(0, Brain(alias=None, root=here, here=True))
+        brains.insert(0, Brain(alias=None, root=here_bundle, here=True, config_root=here))
     if not brains:
         return BrainSet([Brain(alias=None, root=cwd.resolve(), here=True)])
     ordered = sorted(brains, key=lambda b: (0 if b.here else 1 if b.role == "user" else 2))
@@ -578,6 +621,6 @@ def scan_hosts(env: Mapping[str, str] | None = None) -> list[HostRoot]:
 __all__ = [
     "HostRoot", "scan_hosts",
     "Brain", "BrainSet", "alias_for", "discover_here", "load_registry", "parse_scope",
-    "qualify", "qualify_paths", "register_brain", "registry_path", "resolve_brain_set",
+    "config_root_of", "entry_paths", "qualify", "qualify_paths", "register_brain", "registry_path", "resolve_brain_set",
     "save_registry", "split_qualified", "unregister_brain",
 ]

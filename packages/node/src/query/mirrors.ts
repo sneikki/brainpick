@@ -10,7 +10,8 @@ import { join } from "node:path";
 
 import { checkFresh } from "../compile/pipeline";
 import { loadConfig } from "../config";
-import { neighborsPayload, overviewPayload, readPayload, searchPayload } from "../mcp";
+import { brainName, neighborsPayload, overviewPayload, readPayload, searchPayload } from "../mcp";
+import { logQuery } from "../querylog";
 import { ServeState } from "../serve/state";
 import { presentNeighbors, presentOverview, presentRead, presentSearch, toJson } from "./present";
 
@@ -43,15 +44,37 @@ function staleNote(root: string): string | undefined {
 
 export async function searchMirror(
   root: string,
-  query: string,
+  query: string | null,
   mode: string,
   limit: number,
   jsonMode: boolean,
+  terms: string[] | null = null,
+  situation: string | null = null,
+  session: string | null = null,
 ): Promise<MirrorOutput> {
   const state = await heldState(root);
   if (state === null) return uncompiled(root, jsonMode);
-  const payload = await searchPayload(state, query, mode, limit);
-  return { out: jsonMode ? toJson(payload) : presentSearch(payload, query), err: staleNote(root) };
+  const twoInput = terms !== null || situation !== null;
+  const payload = await searchPayload(
+    state,
+    twoInput ? null : query,
+    mode,
+    limit,
+    null,
+    null,
+    twoInput ? [...(terms ?? [])] : null,
+    twoInput ? situation ?? "" : null,
+  );
+  const shown = query || [(terms ?? []).join(" "), situation ?? ""].filter((part) => part !== "").join(" ");
+  if (session) {
+    logQuery(
+      session,
+      brainName(state),
+      { situation, terms: [...(terms ?? [])], query, mode, limit, scope: null },
+      payload as Record<string, unknown>,
+    );
+  }
+  return { out: jsonMode ? toJson(payload) : presentSearch(payload, shown), err: staleNote(root) };
 }
 
 export async function readMirror(root: string, doc: string, jsonMode: boolean): Promise<MirrorOutput> {

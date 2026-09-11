@@ -16,6 +16,11 @@ exact path → unique file stem → fuzzy title; an ambiguous match returns a
 `truncated` and a `hint`. Over budget it returns the outline plus a leading
 excerpt and a hint to request `sections`. Default budget 2000.
 
+The `outline` lists headings and, for a log-shaped doc such as a journal day,
+every entry head (`* **HH:MM** …`); a `sections` item that is a time
+(`"05:30"`) returns that one entry — the bullet with its continuation lines —
+so a day is read one entry at a time.
+
 Behind a federated server ([federation](../../federation.md)) `doc` may be
 `alias:path`; an unqualified one is resolved across every brain (one hit
 answers, several disambiguate with qualified paths), and the result names its
