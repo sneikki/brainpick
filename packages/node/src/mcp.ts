@@ -757,6 +757,14 @@ export function insertEntry(
       "",
     ];
   }
+  if (/\n\* /.test(entry)) {
+    return [
+      "add_entry takes exactly one journal entry — content has a second entry (another line " +
+        "starting '* ' at column 0); send one entry per call, and indent supporting points " +
+        "two spaces as continuation lines",
+      "",
+    ];
+  }
   entry = entry.replace(ENTRY_HEAD, `* **${hhmm}** `).replace(/\n+$/, "");
   const head = ENTRY.exec(entry)!; // the head was just written
   if (previous === null) {

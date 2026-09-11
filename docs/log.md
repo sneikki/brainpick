@@ -2,6 +2,11 @@
 
 ## 2026-09-11
 
+- Fixed: `brain_write` `add_entry` accepted several entries in one call (spec/70).
+  It only checked that content starts with `* `, so a model's five column-0
+  bullets landed as one stamped entry followed by headless ones. A later
+  column-0 `* ` line is now a second entry and is refused with an instruction,
+  nothing written; indented continuation bullets stay legal. Both engines.
 - Added: `brainpick recall` speaks Hermes (spec/72). When `hook_event_name` is
   `pre_llm_call` the prompt comes from `extra.user_message` and the answer is
   `{"context": …}`, which Hermes appends to the user's message; the rest of

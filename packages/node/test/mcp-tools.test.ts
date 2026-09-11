@@ -430,6 +430,26 @@ test("write add_entry slots into the newest-first day", async () => {
   expect(existsSync(join(root, "muistio.md"))).toBe(false);
 });
 
+test("add_entry rejects a second entry", async () => {
+  // spec/70: content is exactly ONE entry — a later column-0 `* ` line is a second entry
+  // and nothing is written (a model had sent five headless bullets in one call); indented
+  // `  * ` continuation bullets stay legal.
+  setClock("09:00");
+  const root = copyBundle();
+  const state = await makeState(root);
+  const day = join(root, "paivakirja", "2026-06-02.md");
+  const two = "* `kuu` · decision — first.\n* `kuu` · learning — second.";
+  const bad = await writePayload(state, "paivakirja/2026-06-02", two, "add_entry");
+  expect(bad["ok"]).toBe(false);
+  expect(String(bad["instruction"])).toContain("second entry");
+  expect(existsSync(day)).toBe(false);
+  const nested = "* `kuu` · decision — first.\n  * a supporting point\n  * another";
+  expect((await writePayload(state, "paivakirja/2026-06-02", nested, "add_entry"))["ok"]).toBe(true);
+  expect(readFileSync(day, "utf8")).toBe(
+    "# 2026-06-02\n\n## 2026-06-02\n\n* **09:00** `kuu` · decision — first.\n  * a supporting point\n  * another\n",
+  );
+});
+
 test("concurrent add_entry loses nothing", async () => {
   // Fifty overlapping add_entry calls to one day (spec/70: writes are serialized server-side)
   // — every entry lands, in time order, none overwritten.
