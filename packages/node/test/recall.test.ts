@@ -65,6 +65,19 @@ test("parse payload reads three fields", () => {
   for (const bad of [null, [], "text", { prompt: 3 }, {}]) expect(parsePayload(bad)).toBeNull();
 });
 
+test("parse payload reads the hermes dialect", () => {
+  const hermes = {
+    hook_event_name: "pre_llm_call", session_id: "h1", tool_name: null,
+    extra: { user_message: "a b c d e f", platform: "discord" },
+  };
+  expect(parsePayload(hermes)).toEqual(["a b c d e f", "h1", "pre_llm_call"]);
+  // the dialect reads extra.user_message only — a top-level prompt is not Hermes' field
+  expect(parsePayload({ hook_event_name: "pre_llm_call", prompt: "a b c d e f" })).toBeNull();
+  for (const extra of [null, "text", { user_message: ["a", "b"] }, {}]) {
+    expect(parsePayload({ hook_event_name: "pre_llm_call", extra })).toBeNull();
+  }
+});
+
 // -- once per session ----------------------------------------------------------------
 
 test("session file location and sanitizing", () => {
@@ -161,6 +174,22 @@ test("recall without a session keeps no state and echoes the event", async () =>
   expect(first).toEqual(second);
   expect(first.hookSpecificOutput.hookEventName).toBe("BeforeAgent");
   expect(existsSync(join(base, "state"))).toBe(false);
+});
+
+test("recall answers hermes in its own envelope once per session", async () => {
+  const { root, env } = await brain();
+  const payload = JSON.stringify({
+    hook_event_name: "pre_llm_call", session_id: "h-1",
+    extra: { user_message: FLOOD, platform: "discord", is_first_turn: true },
+  });
+  const { out } = await recallMirror(root, payload, 10, env);
+  const line = JSON.parse(out!);
+  expect(Object.keys(line)).toEqual(["context"]);
+  expect(out).toBe(JSON.stringify(line));
+  expect(line.context.startsWith(`kotiaurinko ${HEADER}\n\n`)).toBe(true);
+  expect(line.context).toContain("### paivakirja/2026-06-02.md (09:00)\n");
+  const again = await recallMirror(root, payload, 10, env);
+  expect(again.out ?? "").not.toContain("paivakirja/2026-06-02.md (09:00)");
 });
 
 test.each([

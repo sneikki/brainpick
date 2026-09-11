@@ -2,6 +2,11 @@
 
 ## 2026-09-11
 
+- Added: `brainpick recall` speaks Hermes (spec/72). When `hook_event_name` is
+  `pre_llm_call` the prompt comes from `extra.user_message` and the answer is
+  `{"context": …}`, which Hermes appends to the user's message; the rest of
+  recall is unchanged, and the conformance golden for Hermes carries the same
+  context as the Claude Code one.
 - Added: `brainpick recall` (spec/72) — the prompt hook. A harness pipes its
   hook payload in; recall searches the brain with the prompt as the situation
   and its identifiers as terms, and prints the matching memories as hook

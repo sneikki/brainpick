@@ -249,6 +249,22 @@ cases:
     # The hook event defaults to UserPromptSubmit and the header names the
     # bundle directory, kotiaurinko.
 
+  - id: recall-kotiaurinko-hermes
+    class: recall
+    bundle: kotiaurinko
+    payload:
+      hook_event_name: pre_llm_call
+      session_id: ""
+      extra:
+        user_message: "How do the tides of maa follow kuu while komeetta passes aurinko, as `kuu.md` describes?"
+        platform: discord
+        is_first_turn: true
+    golden: recall/tides-hermes.json
+    # Reviewed: the Hermes dialect of recall-kotiaurinko-tides — the same prompt
+    # read from extra.user_message, so the context is byte-identical to that
+    # golden's additionalContext; only the envelope is Hermes' {"context": …}.
+    # The empty session_id means no session and no state.
+
   - id: recall-kotiaurinko-gated
     class: recall
     bundle: kotiaurinko

@@ -22,6 +22,7 @@ export const QUOTED_MAX = 5;
 export const ENTRY_CHARS = 1500;
 export const MAX_TERMS = 8;
 const DEFAULT_EVENT = "UserPromptSubmit";
+const HERMES_EVENT = "pre_llm_call"; // Hermes' shell hook: the prompt is extra.user_message
 
 // JS classes and \b are ASCII — the Python twin compiles the same patterns with re.ASCII.
 const TERM_PATTERNS = [
@@ -42,19 +43,25 @@ interface Hit {
   snippet?: string | null;
 }
 
-/** [prompt, session_id or null, hook event] — null when there is no string prompt. */
+/** [prompt, session_id or null, hook event] — null when there is no string prompt. Two dialects
+ * (spec/72): the Claude Code protocol's `prompt`, and Hermes' `extra.user_message` when the
+ * event is `pre_llm_call`. */
 export function parsePayload(payload: unknown): [string, string | null, string] | null {
   if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return null;
   const fields = payload as Record<string, unknown>;
-  const prompt = fields["prompt"];
+  const event = typeof fields["hook_event_name"] === "string" ? fields["hook_event_name"] : DEFAULT_EVENT;
+  let prompt: unknown;
+  if (event === HERMES_EVENT) {
+    const extra = fields["extra"];
+    prompt = typeof extra === "object" && extra !== null && !Array.isArray(extra)
+      ? (extra as Record<string, unknown>)["user_message"]
+      : undefined;
+  } else {
+    prompt = fields["prompt"];
+  }
   if (typeof prompt !== "string") return null;
   const session = fields["session_id"];
-  const event = fields["hook_event_name"];
-  return [
-    prompt,
-    typeof session === "string" && session !== "" ? session : null,
-    typeof event === "string" ? event : DEFAULT_EVENT,
-  ];
+  return [prompt, typeof session === "string" && session !== "" ? session : null, event];
 }
 
 /** A slash command or an acknowledgement carries no situation to recall for. */
@@ -160,6 +167,7 @@ export async function recallLine(
     appendFileSync(store, keys.map((key) => key + "\n").join(""), "utf8");
   }
   if (context === null) return null;
+  if (event === HERMES_EVENT) return JSON.stringify({ context });
   return JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext: context } });
 }
 

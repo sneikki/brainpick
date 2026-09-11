@@ -26,14 +26,20 @@ reads the injected hits still searches with a situation and terms of its own
 
 ## Input
 
-Three fields are read; everything else is ignored:
+Recall speaks two hook dialects, told apart by `hook_event_name`:
 
-- `prompt` — the user's prompt (string; absent or non-string = no output).
-- `session_id` — the harness session (string; may be absent).
-- `hook_event_name` — echoed back (default `"UserPromptSubmit"`).
+- **The Claude Code protocol** (the default): the prompt is `prompt`, the
+  session `session_id`, and `hook_event_name` is echoed back (default
+  `"UserPromptSubmit"`). This is the payload Claude Code sends to
+  `UserPromptSubmit` and Gemini CLI to `BeforeAgent`; harnesses that bridge to
+  the same protocol can run recall too.
+- **Hermes** (`hook_event_name` is `"pre_llm_call"`): the prompt is
+  `extra.user_message`, the session `session_id`. Hermes runs this shell hook
+  once per user turn and appends the context it returns to the user's
+  message.
 
-This is the payload Claude Code sends to `UserPromptSubmit` and Gemini CLI to
-`BeforeAgent`; any harness speaking the same hook protocol can run recall.
+A prompt that is absent or not a string means no output; an absent or empty
+session id means no session. Everything else in the payload is ignored.
 
 ## The gate
 
@@ -117,10 +123,16 @@ per pointer (`: <snippet>` omitted when there is none). `<name>` is the name
 of the directory `--root` resolves to. When nothing is quoted and nothing is
 a pointer — no hits, or every hit already seen — recall prints nothing.
 Otherwise it prints one line of compact JSON (no spaces after `,` and `:`,
-non-ASCII unescaped) and a newline:
+non-ASCII unescaped) and a newline — for the Claude Code protocol
 
 ```json
 {"hookSpecificOutput":{"hookEventName":"<hook_event_name>","additionalContext":"<context>"}}
+```
+
+and for Hermes
+
+```json
+{"context":"<context>"}
 ```
 
 ## Wiring
@@ -133,6 +145,18 @@ the MCP snippet uses (`brainpick` as that installation reaches it), then
 
 ```json
 {"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": "<launcher> recall --root <absolute root>", "timeout": 15}]}]}}
+```
+
+Hermes takes shell hooks from its `config.yaml`. It runs the command without a
+shell (no inline environment assignments) and asks for consent once per command
+on a terminal, so a gateway also needs `hooks_auto_accept: true`:
+
+```yaml
+hooks:
+  pre_llm_call:
+    - command: "brainpick recall --root <absolute root>"
+      timeout: 15
+hooks_auto_accept: true
 ```
 
 Recall reads one brain. Recalling across the brains of a federation
