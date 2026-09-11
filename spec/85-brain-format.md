@@ -244,8 +244,10 @@ found, and compiles tier 1.
 Class `brain-template`:
 
 - Scaffolding into an empty directory with a fixed date and bundle id, without
-  the henxels step, writes exactly the files above, byte-identical to the
-  golden tree in both engines.
+  the henxels step, writes exactly the files above (and `.gitignore`),
+  byte-identical to the golden — one JSON object of path → content, so the
+  fixture holds no live `.gitignore` or `_brain/` of its own — in both
+  engines.
 - A second run writes nothing and reports every file as existing.
 
 Class `brain`:

@@ -26,7 +26,9 @@ block-beta
   it *hold* under agent writes — from a git hook or from \`brain_write\` alike.
   Brainpick itself never requires it (a hand-tended OKF folder compiles fine);
   without it the format is a hope, with it the format is a fact. It also ships
-  the templates: \`okf-llm-wiki\` for a wiki, \`brainpick-brain\` for a brain.
+  the \`okf-llm-wiki\` template for a wiki; the brain template is brainpick's
+  own (\`brainpick init --template brain\`), because it teaches how brainpick
+  writes.
 - **OKF** is the file format: plain markdown, a frontmatter \`type\`, an
   \`index.md\`, a \`log.md\`. Any OKF bundle — a wiki, a docs folder, a pile of
   notes with \`type:\` — is a valid input to everything above.
@@ -64,19 +66,22 @@ export const validate = async () => {
     }
   }
 
-  // The brain-format layer is a real spec section and both engines hand off to
-  // the two named henxels templates when there is no bundle yet.
+  // The brain-format layer is a real spec section, both engines ship the brain
+  // template and still name henxels' wiki template when there is no bundle yet.
   if (!fs.existsSync(path.join(root, 'spec', '85-brain-format.md'))) {
     throw new Error('The stack points at spec/85 but it does not exist');
+  }
+  if (!fs.existsSync(path.join(root, 'integrations', 'brain-template', 'henxels.yaml'))) {
+    throw new Error('The stack says brainpick ships the brain template but integrations/brain-template/ has no contract');
   }
   for (const engine of [
     path.join(root, 'packages', 'python', 'src', 'brainpick', 'scaffold.py'),
     path.join(root, 'packages', 'node', 'src', 'scaffold.ts'),
   ]) {
     const src = fs.readFileSync(engine, 'utf-8');
-    for (const template of ['okf-llm-wiki', 'brainpick-brain']) {
+    for (const template of ['okf-llm-wiki', 'brain']) {
       if (!src.includes(`--template ${template}`)) {
-        throw new Error(`The stack names the henxels template "${template}" but ${path.basename(engine)} never hands off to it`);
+        throw new Error(`The stack names the template "${template}" but ${path.basename(engine)} never offers it`);
       }
     }
   }
@@ -86,7 +91,7 @@ export const errorContent = `
 [Validation Failed] The "The stack" section drifted from reality.
 
 The diagram must list the five layers bottom-up (henxels at the bottom), spec/85
-must exist, and both engines' scaffold code must hand off to the henxels
-templates the section names (okf-llm-wiki, brainpick-brain). Fix the code or
+must exist, and both engines' scaffold code must offer the templates the
+section names (henxels' okf-llm-wiki, brainpick's brain). Fix the code or
 the section in README.md.codx/theStack.ts.
 `;

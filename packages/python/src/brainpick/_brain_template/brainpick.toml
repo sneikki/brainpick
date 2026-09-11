@@ -1,0 +1,19 @@
+# brainpick.toml — how this brain is compiled and served (SHARED policy, committed).
+# Machine-local model endpoints live in brainpick.local.toml beside this file —
+# it deep-merges over this one and stays out of git; `brainpick init` detects an
+# embedding backend and writes it there.
+spec = "0.1"
+
+[bundle]
+id = "{{bundle_id}}"    # minted once — an address for this brain, never a credential
+root = "_brain"
+exclude = ["raw/*"]     # source material stays greppable but never surfaces in results
+
+[index]
+mode = "section"        # brainpick owns a generated block at the end of index.md
+
+[brain]
+format = 2              # the brainpick brain format (spec/85): one journal file per day
+audience = "personal"   # personal | team | public — who this brain is written for
+# origin = ""           # canonical git URL, once this repo has one
+# readers = []          # for team: who reads it, by handle or role

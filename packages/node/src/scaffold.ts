@@ -8,6 +8,7 @@
  * machine-local, written there, and kept out of git) and the .brainpick-auth.json
  * gitignore line (spec/80 auth: secrets must never enter git).
  */
+import { spawnSync } from "node:child_process";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
@@ -22,8 +23,10 @@ import {
   detectLinkStyle,
   findRepoRoot,
   henxelsOnPath,
+  needsShellForScript,
   openaiKeyPresent,
   probeBackends,
+  which,
   type Backend,
   type BundleInfo,
   type Env,
@@ -284,14 +287,58 @@ function handOffToHenxels(voice: Voice, root: string, bundle: BundleInfo): numbe
         "carry OKF `type:` frontmatter (3+ needed, or an index.md with okf_version)",
     );
   }
-  voice.step("brainpick never scaffolds — its sibling henxels owns the templates (one shot, no install):");
-  voice.step(
-    `  cd ${root} && uvx henxels init --template brainpick-brain   ` +
-      "(a brain — your agent's memory in _brain/, spec/85)",
-  );
+  voice.step("scaffold a brain — your agent's memory in _brain/ (spec/85):");
+  voice.step(`  brainpick init --template brain --root ${root}`);
+  voice.step("or a plain wiki with henxels' template (one shot, no install), then come back:");
   voice.step(`  cd ${root} && uvx henxels init --template okf-llm-wiki     (a plain wiki in _wiki/)`);
-  voice.step(`then come back: brainpick init --root ${root}`);
+  voice.step(`  brainpick init --root ${root}`);
   return 1;
+}
+
+/** spec/85: scaffold the brain before init goes on — a number means stop with it. */
+async function applyTemplate(voice: Voice, root: string, template: string, dryRun: boolean, env: Env): Promise<number | null> {
+  const { TEMPLATES, scaffoldBrain, templateFiles } = await import("./brain-template");
+  if (!(TEMPLATES as readonly string[]).includes(template)) {
+    voice.line("✗", `unknown template '${template}' — available: ${TEMPLATES.join(", ")}`);
+    return 1;
+  }
+  if (dryRun) {
+    voice.raw("dry run — nothing written. --template brain would write (never overwriting):");
+    for (const rel of templateFiles()) voice.step((fileExists(join(root, rel)) ? "keep  " : "write ") + rel);
+    voice.step("then run henxels init (a git repository with henxels on PATH), then init as usual");
+    return 0;
+  }
+
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  const report = scaffoldBrain(root, today, generateBundleId());
+  const kept = report.existing.length > 0 ? `, ${report.existing.length} existing left untouched` : "";
+  voice.line("✓", `template: brain scaffolded — ${report.written.length} files written${kept}`);
+  if (report.gitignore !== null) voice.line("✓", `gitignore: brain entries ${report.gitignore}`);
+  if (report.fragment !== null) {
+    voice.line("○", "henxels.yaml exists — never edited; paste the brain contract in yourself:");
+    voice.raw(report.fragment);
+  }
+
+  const isRepo = fileExists(join(root, ".git"));
+  const henxels = which("henxels", env);
+  if (isRepo && henxels !== null) {
+    const proc = spawnSync(henxels, ["init"], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...process.env, ...env },
+      shell: needsShellForScript(henxels), // .bat/.cmd shims need a shell; argv is fixed
+    });
+    if (proc.status === 0) {
+      voice.line("✓", "henxels: hooks, schema and the AGENTS.md digest installed");
+    } else {
+      voice.line("✗", `henxels init failed (exit ${proc.status}) — run it yourself: cd ${root} && henxels init`);
+    }
+  } else {
+    const why = isRepo ? "henxels is not on PATH" : "not a git repository yet";
+    voice.line("○", `henxels: ${why} — install the referee: cd ${root} && henxels init`);
+  }
+  return null;
 }
 
 /** Print the probe verdicts; return the backend worth recording (or null). */
@@ -340,6 +387,7 @@ export interface InitOptions {
   env?: Env;
   probes?: readonly ProbeResult[];
   print?: Print;
+  template?: string;
 }
 
 export async function runInit(root: string, options: InitOptions = {}): Promise<number> {
@@ -360,6 +408,12 @@ export async function runInit(root: string, options: InitOptions = {}): Promise<
     return 1;
   }
   root = resolve(root);
+
+  // template — scaffold first, then init serves what it wrote (spec/85)
+  if (options.template !== undefined) {
+    const stop = await applyTemplate(voice, root, options.template, options.dryRun ?? false, env);
+    if (stop !== null) return stop;
+  }
 
   // 0 — the config may already exist and point below itself ([bundle] root, spec/80):
   // a brain scaffolded by henxels keeps brainpick.toml at the repo root and the
@@ -406,7 +460,10 @@ export async function runInit(root: string, options: InitOptions = {}): Promise<
 
   // 4 — henxels
   const contract = detectHenxels(root);
-  if (contract !== null) {
+  const gated = contract !== null && readFileSync(contract, "utf8").includes("compile --check-fresh");
+  if (gated) {
+    voice.line("✓", `henxels: contract at ${contract} — its freshness gate is in place`);
+  } else if (contract !== null) {
     voice.line("✓", `henxels: contract at ${contract} — freshness gate offered below`);
   } else {
     voice.line("○", "henxels: no contract governs this bundle (optional) — uv tool install henxels");
@@ -495,7 +552,7 @@ export async function runInit(root: string, options: InitOptions = {}): Promise<
   voice.raw(mcpSnippets(root));
 
   // 8 — the henxels freshness gate
-  if (contract !== null) {
+  if (contract !== null && !gated) {
     voice.raw();
     voice.raw(`Gate commits on a fresh brain — paste into ${contract}:`);
     voice.raw();
@@ -580,7 +637,7 @@ export async function runDoctor(root: string, options: DoctorOptions = {}): Prom
     emit("✓", `bundle: ${bundle.typed} typed concept docs of ${bundle.docs} (density scan)`);
   } else {
     emit("✗", `bundle: nothing OKF-shaped at ${root}`,
-      `cd ${root} && uvx henxels init --template brainpick-brain   (or okf-llm-wiki)`);
+      `brainpick init --template brain --root ${root}   (or: cd ${root} && uvx henxels init --template okf-llm-wiki)`);
   }
 
   // artifacts

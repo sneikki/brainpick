@@ -122,15 +122,15 @@ def test_init_dry_run_writes_nothing(kotiaurinko, capsys):
     assert (kotiaurinko / "index.md").read_text(encoding="utf-8") == index_before
 
 
-def test_init_empty_dir_hands_the_scaffold_to_henxels(tmp_path, capsys):
+def test_init_empty_dir_offers_the_brain_template_and_the_wiki(tmp_path, capsys):
     empty = tmp_path / "tyhja"
     empty.mkdir()
     assert run_init(empty, env={}, probes=NO_BACKENDS) == 1
     out = capsys.readouterr().out
-    assert "uvx henxels init --template brainpick-brain" in out  # one-shot, no install step
-    assert "uvx henxels init --template okf-llm-wiki" in out
-    assert out.index("brainpick-brain") < out.index("okf-llm-wiki")  # the brain is the primary path
-    assert list(empty.iterdir()) == []  # never reimplement the wiki template
+    assert f"brainpick init --template brain --root {empty.resolve()}" in out  # the brain is ours (spec/85)
+    assert "uvx henxels init --template okf-llm-wiki" in out  # the plain wiki stays henxels'
+    assert out.index("--template brain") < out.index("okf-llm-wiki")  # the brain is the primary path
+    assert list(empty.iterdir()) == []  # init without --template scaffolds nothing
 
 
 def test_init_missing_root_is_an_instruction(tmp_path, capsys):
@@ -419,7 +419,7 @@ def test_doctor_hosts_line_counts_per_project_entries(kotiaurinko, tmp_path, cap
 # -- init over a brain (spec/85: config at the repo root, bundle in _brain/) --------
 
 def brain_repo(tmp_path: Path) -> Path:
-    """What `henxels init --template brainpick-brain` leaves behind, minimally."""
+    """A format-1 brain as the henxels template left it, minimally."""
     repo = tmp_path / "repo"
     typed_bundle(repo / "_brain")
     (repo / "_brain" / "index.md").write_text(
@@ -462,4 +462,4 @@ def test_init_handoff_offers_the_brain_template(tmp_path, capsys):
     assert run_init(tmp_path, env={}, probes=NO_BACKENDS) == 1
     out = capsys.readouterr().out
     assert "uvx henxels init --template okf-llm-wiki" in out
-    assert "uvx henxels init --template brainpick-brain" in out
+    assert "brainpick init --template brain" in out

@@ -33,6 +33,7 @@
     "dist",
     "static",
     "skill",
+    "brain-template",
     "README.md"
   ],
   "scripts": {

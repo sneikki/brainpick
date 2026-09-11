@@ -126,16 +126,16 @@ test("init dry-run writes nothing", async () => {
   expect(readFileSync(join(root, "index.md"), "utf8")).toBe(indexBefore);
 });
 
-test("init empty dir hands the scaffold to henxels", async () => {
+test("init empty dir offers the brain template and the wiki", async () => {
   const empty = join(tempDir(), "tyhja");
   mkdirSync(empty);
   const out = capture();
   expect(await runInit(empty, { env: {}, probes: NO_BACKENDS, print: out.print })).toBe(1);
   const text = out.text();
-  expect(text).toContain("uvx henxels init --template brainpick-brain"); // one-shot, no install step
-  expect(text).toContain("uvx henxels init --template okf-llm-wiki");
-  expect(text.indexOf("brainpick-brain")).toBeLessThan(text.indexOf("okf-llm-wiki")); // the brain is the primary path
-  expect(readdirSync(empty)).toEqual([]); // never reimplement the wiki template
+  expect(text).toContain(`brainpick init --template brain --root ${resolve(empty)}`); // the brain is ours (spec/85)
+  expect(text).toContain("uvx henxels init --template okf-llm-wiki"); // the plain wiki stays henxels'
+  expect(text.indexOf("--template brain")).toBeLessThan(text.indexOf("okf-llm-wiki")); // the brain is the primary path
+  expect(readdirSync(empty)).toEqual([]); // init without --template scaffolds nothing
 });
 
 test("init missing root is an instruction", async () => {
@@ -302,7 +302,7 @@ test("init handoff offers the brain template", async () => {
   const out = capture();
   expect(await runInit(empty, { env: {}, probes: NO_BACKENDS, print: out.print })).toBe(1);
   expect(out.text()).toContain("uvx henxels init --template okf-llm-wiki");
-  expect(out.text()).toContain("uvx henxels init --template brainpick-brain");
+  expect(out.text()).toContain("brainpick init --template brain");
 });
 
 // -- doctor ------------------------------------------------------------------------

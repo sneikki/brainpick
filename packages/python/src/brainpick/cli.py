@@ -95,7 +95,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 def _cmd_init(args: argparse.Namespace) -> int:
     from brainpick.scaffold import run_init
 
-    return run_init(Path(args.root), yes=args.yes, dry_run=args.dry_run)
+    return run_init(Path(args.root), yes=args.yes, dry_run=args.dry_run, template=args.template)
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
@@ -560,6 +560,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="accept the opt-in choices (e.g. record OPENAI_API_KEY for T2)")
     p_init.add_argument("--dry-run", action="store_true",
                         help="print what init would do without writing anything")
+    p_init.add_argument("--template", default=None, metavar="brain",
+                        help="scaffold a template first: brain — a format-2 brain in _brain/ (spec/85)")
     p_init.set_defaults(func=_cmd_init)
 
     p_doctor = sub.add_parser("doctor", help="diagnose config, bundle, artifacts, backends, and UI")

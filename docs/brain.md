@@ -4,7 +4,7 @@ about: concept
 title: "The brain"
 description: "A brain is a wiki meant to be an agent's memory — an OKF bundle with memory-type folders, a declared data flow architecture, inline grounding, an audience and an identity other brains can address; what makes it more than a wiki, and what brainpick does with the difference."
 tags: [brain-format]
-timestamp: 2026-09-07T18:00:00Z
+timestamp: 2026-09-11T09:52:55Z
 ---
 
 # The brain
@@ -12,7 +12,7 @@ timestamp: 2026-09-07T18:00:00Z
 A **wiki** is a collection of information. A **brain** is a wiki that is
 meant to be the memory of an agent. brainpick serves any well-formed OKF
 bundle — the engine does not care — but a brain is the shape brainpick
-*recommends*, and the shape the henxels `brainpick-brain` starter template
+*recommends*, and the shape the brain template (`brainpick init --template brain`)
 produces (see [The brain template](brain-template.md)). The contract is
 [Spec: brain format](reference/spec/brain-format.md); this page is the why.
 
@@ -27,7 +27,7 @@ Four things, and each one is a rule the template enforces:
 1. **Folders are memory types.** `_brain/` holds five memory types, each
    with one job: `knowledge/` (semantic — evergreen concepts), `skills/`
    (procedural — distilled, actionable procedures), `journals/` (episodic —
-   one file per month, a dated section per day), `vision/` (direction — the
+   one file per day), `vision/` (direction — the
    northstar as a book), `plans/` (decided work) — plus `raw/`, which is not
    a memory type but the undistilled source material knowledge grounds on,
    kept greppable and excluded from the compiled brain. Nothing is

@@ -4,7 +4,7 @@ about: process
 title: Onboarding
 description: One command from zero to a living brain — init detects the bundle and the models, compiles instantly, and hands every agent its config snippet.
 tags: [engine]
-timestamp: 2026-09-07T16:00:00Z
+timestamp: 2026-09-11T09:53:07Z
 ---
 
 # Onboarding
@@ -17,12 +17,13 @@ The choreography:
 
 1. **Detect the bundle** — an `index.md` with `okf_version`, or a density
    scan for concept documents; link style (markdown vs wikilinks) is sniffed
-   into configuration. An empty directory is offered henxels' templates
-   instead — `uvx henxels init --template brainpick-brain` for a
-   [brain](brain.md), `okf-llm-wiki` for a plain wiki — because brainpick
-   never re-implements the scaffolding its sibling already owns. "Install
-   brainpick here, I want a brain" is a complete instruction to an agent:
-   init names the command, the agent runs it, then runs init again.
+   into configuration. An empty directory is offered the two starters
+   instead — `brainpick init --template brain` for a [brain](brain.md)
+   (brainpick's own template, because what it teaches depends on how
+   brainpick writes — [The brain template](brain-template.md)), and henxels'
+   `okf-llm-wiki` for a plain wiki. "Install brainpick here, I want a brain"
+   is a complete instruction to an agent: one command scaffolds the brain,
+   installs the henxels referee and compiles it.
 2. **Detect the environment** — the [embedding detection](embedding-detection.md)
    ladder, an extraction endpoint for the
    [knowledge graph tier](knowledge-graph-tier.md), and whether a henxels

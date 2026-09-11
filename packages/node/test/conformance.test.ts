@@ -18,11 +18,12 @@ import { buildChunks } from "../src/compile/t2";
 import { Brain, BrainSet } from "../src/federation";
 import { searchPayload } from "../src/mcp";
 import { recallMirror } from "../src/recall";
+import { scaffoldBrain } from "../src/brain-template";
 import { graphSearch, loadKg } from "../src/kg";
 import { search, type SearchHit } from "../src/query/keyword";
 import { runSearch } from "../src/query/router";
 import { semanticSearch } from "../src/query/vectors";
-import { cleanup, copyBundle, EXPECTED, SCENARIOS, SPEC, stageT3Export } from "./helpers";
+import { cleanup, copyBundle, EXPECTED, SCENARIOS, SPEC, stageT3Export, tempDir } from "./helpers";
 
 afterEach(cleanup);
 
@@ -52,6 +53,8 @@ interface ConformanceCase {
   payload?: Record<string, unknown>;
   golden?: string;
   expect_empty?: boolean;
+  date?: string;
+  bundle_id?: string;
 }
 
 const CASES = (
@@ -147,6 +150,29 @@ describe("conformance", () => {
           );
           const expected = readFileSync(join(EXPECTED, c.bundle, c.artifact!), "utf8");
           expect(actual, `${c.artifact} drifted from golden`).toBe(expected);
+        });
+        break;
+
+      case "brain-template":
+        test(c.id, () => {
+          // spec/85: the scaffold's bytes — every written file, nothing missing or extra
+          const root = tempDir();
+          const report = scaffoldBrain(root, c.date!, c.bundle_id!);
+          const written: Record<string, string> = {};
+          const walk = (dir: string, prefix: string): void => {
+            for (const entry of readdirSync(dir, { withFileTypes: true })) {
+              const rel = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+              if (entry.isDirectory()) walk(join(dir, entry.name), rel);
+              else written[rel] = readFileSync(join(dir, entry.name), "utf8");
+            }
+          };
+          walk(root, "");
+          const golden = JSON.parse(readFileSync(join(EXPECTED, c.golden!), "utf8")) as Record<string, string>;
+          expect(written).toEqual(golden);
+          const again = scaffoldBrain(root, c.date!, c.bundle_id!);
+          expect(again.written).toEqual([]);
+          expect(again.gitignore).toBeNull();
+          expect(report.written.length + 1).toBe(Object.keys(golden).length); // the template's files plus .gitignore
         });
         break;
 

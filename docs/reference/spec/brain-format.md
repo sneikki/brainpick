@@ -4,12 +4,12 @@ about: concept
 title: "Spec: brain format"
 description: "The normative contract for a brain — the fixed _brain/ root, the five memory-type folders, the engine-consumed frontmatter keys and their additive-only policy, inline grounding, the data flow's folder order, the [brain] config section, the brain:// link syntax and the format version with its migration rule."
 tags: [spec, brain-format]
-timestamp: 2026-09-07T16:00:00Z
+timestamp: 2026-09-11T09:53:07Z
 ---
 
 # Spec: brain format
 
-`spec/85-brain-format.md` fixes what both engines and the henxels template
+`spec/85-brain-format.md` fixes what both engines and the brain template
 must agree on for [The brain](../../brain.md): the parts that end up in
 committed content and would hurt to change later.
 
@@ -18,9 +18,9 @@ committed content and would hurt to change later.
   project management (`_todo.md`) stays beside the brain.
 - **Folders are memory types — for the template.** `knowledge/`
   (semantic), `skills/` (procedural, `type: playbook`, with generated
-  `skilltree.md`), `journals/` (episodic — one file per month `YYYY-MM.md`,
-  a `## YYYY-MM-DD` section per day newest first, earlier months in
-  `journals/archive/`), `vision/` (a book with an `index.md` contents page)
+  `skilltree.md`), `journals/` (episodic — one file per day `YYYY-MM-DD.md`,
+  its entries newest first under the server's `**HH:MM**` heads, earlier
+  months' days in `journals/archive/`; format 1 kept month files), `vision/` (a book with an `index.md` contents page)
   and `plans/` (decided work), plus `raw/` for undistilled source material
   that is excluded from the compiled brain via `[bundle] exclude`. The five
   memory types are sufficient: a new one is a `type` value or a sub-folder,
@@ -48,10 +48,16 @@ committed content and would hurt to change later.
 - **`brain://` links.** `brain://<slug>-<id>/<path>` — slug for the reader,
   the trailing 21-char `[bundle] id` authoritative, path bundle-relative.
   Extracted with `kind: "brain"`, never counted as ghosts; resolution is
-  federation's job and out of scope for format 1.
-- **Versioning.** `[brain] format` is the stamp; a later format rewrites
+  federation's job and out of scope for this format.
+- **Versioning.** `[brain] format` is the stamp — format 2 has day journals,
+  format 1 had month files, both are served; a later format rewrites
   committed content only through `brainpick migrate --to N` (deterministic,
   dry-run diff) and keeps every earlier format servable.
+- **The template.** `brainpick init --template brain` writes the listed
+  files (`brainpick.toml`, `henxels.yaml`, `henxels_checks.py`, the `_brain/`
+  seeds, `_todo.md`) and `.gitignore` entries, never overwriting, then runs
+  `henxels init`; conformance class `brain-template` holds both engines to
+  one golden scaffold.
 - **Conformance class `brain`.** `[brain]` parsing with defaults, env and
   the audience warning in both engines; `brain://` extraction; a minimal
   fixture brain whose overview lists `type: playbook` docs first and whose

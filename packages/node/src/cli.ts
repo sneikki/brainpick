@@ -498,9 +498,14 @@ program
   .option("--root <path>", "bundle root (default: current directory)", ".")
   .option("--yes", "accept the opt-in choices (e.g. record OPENAI_API_KEY for T2)")
   .option("--dry-run", "print what init would do without writing anything")
-  .action(async (opts: { root: string; yes?: boolean; dryRun?: boolean }) => {
+  .option("--template <name>", "scaffold a template first: brain — a format-2 brain in _brain/ (spec/85)")
+  .action(async (opts: { root: string; yes?: boolean; dryRun?: boolean; template?: string }) => {
     const { runInit } = await import("./scaffold");
-    process.exitCode = await runInit(opts.root, { yes: opts.yes ?? false, dryRun: opts.dryRun ?? false });
+    process.exitCode = await runInit(opts.root, {
+      yes: opts.yes ?? false,
+      dryRun: opts.dryRun ?? false,
+      template: opts.template,
+    });
   });
 
 program
