@@ -41,6 +41,7 @@ is the reference implementation) and the diffs are reviewed like code.
 | `50-rest-api.md` | the REST surface both servers implement |
 | `60-live-deltas.md` | the SSE delta protocol |
 | `70-mcp-tools.md` | MCP tool names, schemas, budgets |
+| `72-recall.md` | `brainpick recall` — prompt-time memory for harness hooks: the gate, the two-input query, once-per-session, the rendered context |
 | `75-federation.md` | many brains behind one MCP server — the registry, aliases, qualified paths, scope, merged search |
 | `80-config.md` | `brainpick.toml` |
 | `85-brain-format.md` | the brain format — `_brain/` layout, memory-type folders, `[brain]` config, `brain://` links, format versioning |
