@@ -30,7 +30,7 @@ block-beta
 - **OKF** is the file format: plain markdown, a frontmatter \`type\`, an
   \`index.md\`, a \`log.md\`. Any OKF bundle — a wiki, a docs folder, a pile of
   notes with \`type:\` — is a valid input to everything above.
-- **The brain format** ([spec/85](https://github.com/benquemax/brainpick/blob/main/spec/85-brain-format.md))
+- **The brain format** ([spec/85](https://github.com/sneikki/brainpick/blob/main/spec/85-brain-format.md))
   is OKF plus opinions: folders as memory types (\`knowledge/ skills/
   journals/ vision/ plans/\`, \`raw/\` for source material), inline grounding,
   a data-flow architecture (journals → knowledge → skills, read in reverse),

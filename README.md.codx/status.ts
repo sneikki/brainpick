@@ -3,14 +3,15 @@ import * as path from 'path';
 
 export const content = `## Status
 
-**Early.** The full stack is built and the desktop app is downloadable from
-[Releases](https://github.com/benquemax/brainpick/releases) for early testers.
-The vision is committed in
-[\`_vision.md\`](https://github.com/benquemax/brainpick/blob/main/_vision.md);
-the milestones (Ensilento → Kaksoisveto → Hologrammi) landed. The \`brainpick\`
-pip package is [published on PyPI](https://pypi.org/project/brainpick/) as of
-v0.1. The npm publish is
-[parked by ADR](https://github.com/benquemax/brainpick/blob/main/docs/reference/adr/pypi-first-release.md);
+**Early, and a fork.** The full stack is built; upstream's desktop app is
+downloadable from its [Releases](https://github.com/benquemax/brainpick/releases)
+for early testers. The vision is committed in
+[\`_vision.md\`](https://github.com/sneikki/brainpick/blob/main/_vision.md);
+the milestones (Ensilento → Kaksoisveto → Hologrammi) landed. Upstream's
+\`brainpick\` pip package is [published on PyPI](https://pypi.org/project/brainpick/)
+as of v0.1; this fork publishes nothing yet and installs from git. The npm
+publish is
+[parked by ADR](https://github.com/sneikki/brainpick/blob/main/docs/reference/adr/pypi-first-release.md);
 the Node engine ships in-repo as a native peer until npm-side demand shows up.
 `;
 
