@@ -70,6 +70,16 @@ def test_parse_payload_reads_three_fields():
         assert parse_payload(bad) is None
 
 
+def test_parse_payload_reads_the_hermes_dialect():
+    hermes = {"hook_event_name": "pre_llm_call", "session_id": "h1", "tool_name": None,
+              "extra": {"user_message": "a b c d e f", "platform": "discord"}}
+    assert parse_payload(hermes) == ("a b c d e f", "h1", "pre_llm_call")
+    # the dialect reads extra.user_message only — a top-level prompt is not Hermes' field
+    assert parse_payload({"hook_event_name": "pre_llm_call", "prompt": "a b c d e f"}) is None
+    for extra in (None, "text", {"user_message": ["a", "b"]}, {}):
+        assert parse_payload({"hook_event_name": "pre_llm_call", "extra": extra}) is None
+
+
 # -- once per session ----------------------------------------------------------------
 
 
@@ -168,6 +178,19 @@ def test_recall_without_a_session_keeps_no_state_and_echoes_the_event(brain, mon
     second = json.loads(recall(monkeypatch, capsys, brain, payload).out)
     assert first == second and first["hookSpecificOutput"]["hookEventName"] == "BeforeAgent"
     assert not (brain.parent / "state").exists()
+
+
+def test_recall_answers_hermes_in_its_own_envelope_once_per_session(brain, monkeypatch, capsys):
+    payload = {"hook_event_name": "pre_llm_call", "session_id": "h-1",
+               "extra": {"user_message": FLOOD, "platform": "discord", "is_first_turn": True}}
+    out = recall(monkeypatch, capsys, brain, payload).out
+    line = json.loads(out)
+    assert list(line) == ["context"]
+    assert out == json.dumps(line, ensure_ascii=False, separators=(",", ":")) + "\n"
+    assert line["context"].startswith(f"kotiaurinko {HEADER}\n\n")
+    assert "### paivakirja/2026-06-02.md (09:00)\n" in line["context"]
+    again = recall(monkeypatch, capsys, brain, payload).out
+    assert "paivakirja/2026-06-02.md (09:00)" not in again
 
 
 @pytest.mark.parametrize("stdin", [

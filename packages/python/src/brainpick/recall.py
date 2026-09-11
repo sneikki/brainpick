@@ -23,6 +23,7 @@ QUOTED_MAX = 5
 ENTRY_CHARS = 1500
 MAX_TERMS = 8
 DEFAULT_EVENT = "UserPromptSubmit"
+HERMES_EVENT = "pre_llm_call"  # Hermes' shell hook: the prompt is extra.user_message
 HEADER = ("{name} memories matching this prompt (each shown once per session; "
           "brain_read(path) opens the whole doc):")
 
@@ -40,13 +41,22 @@ _UNSAFE_SESSION = re.compile(r"[^A-Za-z0-9_-]")
 
 
 def parse_payload(payload: object) -> tuple[str, str | None, str] | None:
-    """(prompt, session_id or None, hook event) — None when there is no string prompt."""
-    if not isinstance(payload, dict) or not isinstance(payload.get("prompt"), str):
+    """(prompt, session_id or None, hook event) — None when there is no string prompt.
+    Two dialects (spec/72): the Claude Code protocol's `prompt`, and Hermes'
+    `extra.user_message` when the event is `pre_llm_call`."""
+    if not isinstance(payload, dict):
+        return None
+    event = payload.get("hook_event_name")
+    event = event if isinstance(event, str) else DEFAULT_EVENT
+    if event == HERMES_EVENT:
+        extra = payload.get("extra")
+        prompt = extra.get("user_message") if isinstance(extra, dict) else None
+    else:
+        prompt = payload.get("prompt")
+    if not isinstance(prompt, str):
         return None
     session = payload.get("session_id")
-    event = payload.get("hook_event_name")
-    return (payload["prompt"], session if isinstance(session, str) and session else None,
-            event if isinstance(event, str) else DEFAULT_EVENT)
+    return prompt, session if isinstance(session, str) and session else None, event
 
 
 def gated(prompt: str) -> bool:
@@ -133,5 +143,8 @@ def recall_line(state, name: str, prompt: str, session: str | None, event: str,
             handle.write("".join(key + "\n" for key in keys))
     if context is None:
         return None
-    output = {"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}}
+    if event == HERMES_EVENT:
+        output = {"context": context}
+    else:
+        output = {"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}}
     return json.dumps(output, ensure_ascii=False, separators=(",", ":"))
