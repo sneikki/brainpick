@@ -4,7 +4,7 @@ about: thing
 title: "brain_write"
 description: "The one guarded write path — resolve, atomic write, henxels referee, rollback or recompile — with base_sha optimistic concurrency and a merge ladder."
 tags: [mcp, agents]
-timestamp: 2026-09-11T06:36:05Z
+timestamp: 2026-09-11T13:11:18Z
 ---
 
 # brain_write
@@ -14,7 +14,8 @@ two-argument exception. Behind a federated server
 ([federation](../../federation.md)) `doc` may be `alias:path`; an unqualified
 one writes to the brain the working directory is in, and without one the call
 declines naming the aliases — it never guesses a target. `mode ∈ create|replace|append_section|add_entry` (default
-`create`; `add_entry` takes ONE `* ` journal entry, stamps its `**HH:MM**` head
+`create`; `add_entry` takes ONE `* ` journal entry — a second column-0 `* ` line
+is rejected and nothing is written — stamps its `**HH:MM**` head
 with the server's local clock — replacing any time the writer led with — and
 slots it into the newest-first day file, creating a `YYYY-MM-DD` day when
 missing; never echo a day back to add a line). The flow: resolve `doc` to a

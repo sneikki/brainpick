@@ -627,6 +627,10 @@ def _insert_entry(previous: str | None, entry: str, stem: str, hhmm: str) -> tup
         return ("add_entry takes exactly one journal entry — content must be one list item, "
                 "'* `project` · type — text' (continuation lines indented two spaces); "
                 "the server stamps its **HH:MM** head"), ""
+    if re.search(r"\n\* ", entry):
+        return ("add_entry takes exactly one journal entry — content has a second entry (another line "
+                "starting '* ' at column 0); send one entry per call, and indent supporting points "
+                "two spaces as continuation lines"), ""
     entry = _ENTRY_HEAD.sub(f"* **{hhmm}** ", entry, count=1).rstrip("\n")
     head = _ENTRY.match(entry)
     assert head is not None  # the head was just written

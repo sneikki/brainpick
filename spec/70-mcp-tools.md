@@ -147,7 +147,10 @@ anything else returns `{"ok": false, "instruction"}` and writes nothing. A
   `meta` with an instruction: day files are frontmatter-free.
 
 **`add_entry`**: `content` is exactly ONE log entry — a column-0 `* ` list
-item — and the server places it in the day file named by `doc`. The entry's
+item — and the server places it in the day file named by `doc`. Any later
+line that also starts with `* ` at column 0 is a second entry: the server
+returns `{"ok": false, "instruction"}` (one entry per call; supporting points
+are continuation lines indented two spaces) and writes nothing. The entry's
 head is the server's: the server writes `* **HH:MM** ` with its local
 wall-clock time (24-hour), replacing a `**HH:MM**` the writer led with, or
 inserting it after `* ` when there is none. Placement is newest first: after

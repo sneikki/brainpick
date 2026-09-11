@@ -382,6 +382,24 @@ def test_write_add_entry_slots_into_the_newest_first_day(kotiaurinko, monkeypatc
     assert not (kotiaurinko / "muistio.md").exists()
 
 
+def test_add_entry_rejects_a_second_entry(kotiaurinko, monkeypatch):
+    """spec/70: content is exactly ONE entry — a later column-0 `* ` line is a second
+    entry and nothing is written (a model had sent five headless bullets in one call);
+    indented `  * ` continuation bullets stay legal."""
+    set_clock(monkeypatch, "09:00")
+    state = make_state(kotiaurinko)
+    day = kotiaurinko / "paivakirja" / "2026-06-02.md"
+    two = "* `kuu` · decision — first.\n* `kuu` · learning — second."
+    bad = write_payload(state, "paivakirja/2026-06-02", two, mode="add_entry")
+    assert bad["ok"] is False and "second entry" in bad["instruction"]
+    assert not day.exists()
+    nested = "* `kuu` · decision — first.\n  * a supporting point\n  * another"
+    assert write_payload(state, "paivakirja/2026-06-02", nested, mode="add_entry")["ok"] is True
+    assert day.read_text(encoding="utf-8") == (
+        "# 2026-06-02\n\n## 2026-06-02\n\n* **09:00** `kuu` · decision — first.\n  * a supporting point\n  * another\n"
+    )
+
+
 def test_concurrent_add_entry_loses_nothing(kotiaurinko, monkeypatch):
     """Fifty threads add one entry each to the same day at once (spec/70: writes are
     serialized server-side) — every entry lands, in time order, none overwritten."""
