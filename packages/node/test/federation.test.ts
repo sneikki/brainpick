@@ -186,6 +186,34 @@ describe("the brain set", () => {
     ]);
   });
 
+  test("a repo-root config governs the bundle below it (spec/80)", async () => {
+    // brainpick.toml at the repo root with `[bundle] root = "_brain"`: the server must
+    // read THAT config for the bundle — validate, exclude, serve.writes — not the
+    // defaults it finds by looking for a config inside the bundle
+    const dir = tempDir();
+    const repo = join(dir, "repo");
+    cpSync(copyBundle("kotiaurinko"), join(repo, "_brain"), { recursive: true });
+    writeFileSync(join(repo, "brainpick.toml"), '[bundle]\nroot = "_brain"\n\n[validate]\nhenxels = "never"\n');
+
+    const set = resolveBrainSet([repo], { cwd: dir, registryPath: join(dir, "none.toml") });
+    const brain = set.brains[0]!;
+    expect([brain.root, brain.configRoot]).toEqual([canonical(join(repo, "_brain")), canonical(repo)]);
+    expect(brain.loadConfig().validate.henxels).toBe("never");
+    const state = await set.stateFor(brain);
+    expect([state.root, state.config.validate.henxels]).toEqual([brain.root, "never"]);
+
+    // cwd inside the bundle: the marker at the repo root is `here`, and it governs the same bundle
+    const hereSet = resolveBrainSet([], { cwd: join(repo, "_brain", "saaret"), registryPath: join(dir, "none.toml") });
+    expect(hereSet.brains.map((b) => [b.root, b.configRoot, b.here])).toEqual([[brain.root, canonical(repo), true]]);
+
+    // the registry remembers repo + bundle_path: the same config root comes back
+    const registry = join(dir, "brains.toml");
+    registerBrain(join(repo, "_brain"), registry, { alias: "sun" });
+    const regSet = resolveBrainSet([], { cwd: join(dir, "elsewhere"), registryPath: registry });
+    expect(regSet.brains.map((b) => [b.alias, b.root, b.configRoot])).toEqual([["sun", brain.root, canonical(repo)]]);
+    expect((await regSet.stateFor(regSet.brains[0]!)).config.validate.henxels).toBe("never");
+  });
+
   test("registry ∪ here orders here → user → rest and skips missing roots", () => {
     const dir = tempDir();
     const registry = join(dir, "brains.toml");

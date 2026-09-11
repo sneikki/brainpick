@@ -55,6 +55,25 @@ changed and deletes vectors whose ids disappeared.
 change invalidates every vector (full re-embed). Query-time embedding MUST
 use this record.
 
+### Task prefixes (optional)
+
+Asymmetric models (nomic-embed-text, embeddinggemma) want a task prefix on
+the text: one for documents at index time, another for queries. `[models.embedding]
+document_prefix` / `query_prefix` (spec/80) carry them; both default to `""`.
+When either is non-empty:
+
+- the compile stage embeds `document_prefix + chunk.text` (the stored
+  `text` column and `chunks.jsonl` stay unprefixed — the prefix is a model
+  instruction, not content);
+- query-time embedding embeds `query_prefix + query`;
+- the record gains `"document_prefix"` and `"query_prefix"` keys (both
+  present, either may be `""`), and `fingerprint` is over
+  `kind|endpoint|model|dim|document_prefix|query_prefix`.
+
+With both empty the record and fingerprint are exactly as above — the mock
+conformance goldens carry no prefix keys. A prefix change is a backend
+change: full re-embed.
+
 ## Vector store (layout normative)
 
 `t2/lancedb/chunks.lance` — a LanceDB table with columns `id` (utf8, the

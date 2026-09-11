@@ -325,3 +325,17 @@ def test_brain_unknown_audience_warns_and_falls_back(tmp_path):
     with pytest.warns(UserWarning, match="audience"):
         cfg = load_config(tmp_path)
     assert cfg.brain.audience == "personal"
+
+
+def test_embedding_prefixes_parse_and_default_empty(tmp_path):
+    from brainpick.config import load_config
+
+    assert load_config(tmp_path).models.embedding.document_prefix == ""
+    (tmp_path / "brainpick.toml").write_text(
+        '[models.embedding]\nkind = "ollama"\n'
+        'document_prefix = "search_document: "\nquery_prefix = "search_query: "\n',
+        encoding="utf-8",
+    )
+    cfg = load_config(tmp_path)
+    assert cfg.models.embedding.document_prefix == "search_document: "
+    assert cfg.models.embedding.query_prefix == "search_query: "

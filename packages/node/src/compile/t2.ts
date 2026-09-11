@@ -216,8 +216,18 @@ export interface T2Result {
 }
 
 /** First 16 hex chars of sha256 over `kind|endpoint|model|dim` (spec/30). */
-export function fingerprint(kind: string, endpoint: string, model: string, dim: number): string {
-  return sha256Hex(`${kind}|${endpoint}|${model}|${dim}`).slice(0, 16);
+export function fingerprint(
+  kind: string,
+  endpoint: string,
+  model: string,
+  dim: number,
+  documentPrefix = "",
+  queryPrefix = "",
+): string {
+  // spec/30: `|document_prefix|query_prefix` appended only when a prefix is set
+  let key = `${kind}|${endpoint}|${model}|${dim}`;
+  if (documentPrefix || queryPrefix) key += `|${documentPrefix}|${queryPrefix}`;
+  return sha256Hex(key).slice(0, 16);
 }
 
 /** (enabled, instruction) per [modules] vectors: auto lights up when an
@@ -302,13 +312,17 @@ async function syncVectors(
   const embedder = makeEmbedder(kind, endpoint, model, process.env["OPENAI_API_KEY"] ?? "");
   const store = new VectorStore(join(bp, "t2", "lancedb"));
 
+  const docPrefix = embedding.document_prefix;
+  const queryPrefix = embedding.query_prefix;
   const old = readJson(join(bp, "t2", "embedding.json"));
   let sameBackend =
     !full &&
     old !== null &&
     old["kind"] === kind &&
     old["endpoint"] === endpoint &&
-    old["model"] === model;
+    old["model"] === model &&
+    (old["document_prefix"] ?? "") === docPrefix &&
+    (old["query_prefix"] ?? "") === queryPrefix;
 
   let toEmbed: Chunk[];
   let deleteIds: Set<string>;
@@ -324,7 +338,7 @@ async function syncVectors(
     deleteIds = new Set();
   }
 
-  let vectors = toEmbed.length > 0 ? await embedder.embed(toEmbed.map((c) => c.text)) : [];
+  let vectors = toEmbed.length > 0 ? await embedder.embed(toEmbed.map((c) => docPrefix + c.text)) : [];
   let dim: number;
   if (toEmbed.length > 0) dim = vectors[0]!.length;
   else if (sameBackend) dim = Math.trunc(Number(old!["dim"]));
@@ -335,7 +349,7 @@ async function syncVectors(
     // the backend answers with a new dimensionality — every old vector is invalid
     sameBackend = false;
     toEmbed = chunks;
-    vectors = await embedder.embed(chunks.map((c) => c.text));
+    vectors = await embedder.embed(chunks.map((c) => docPrefix + c.text));
   }
 
   const rows: ChunkRow[] = toEmbed.map((c, i) => ({
@@ -351,12 +365,17 @@ async function syncVectors(
     await store.replaceAll(rows, dim);
   }
 
-  const record = {
+  const record: Record<string, string | number> = {
     dim,
     endpoint,
-    fingerprint: fingerprint(kind, endpoint, model, dim),
+    fingerprint: fingerprint(kind, endpoint, model, dim, docPrefix, queryPrefix),
     kind,
     model,
   };
+  if (docPrefix || queryPrefix) {
+    // spec/30: keys appear only when a prefix is set
+    record["document_prefix"] = docPrefix;
+    record["query_prefix"] = queryPrefix;
+  }
   return writeIfChanged(join(bp, "t2", "embedding.json"), canonicalJson(record));
 }

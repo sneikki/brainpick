@@ -310,3 +310,90 @@ test("full recompile re-embeds everything but stays byte-stable", async () => {
   expect(embedder.embeddedTexts).toHaveLength(total); // ignore the store, rebuild all
   expect(result.seq).toBe(first.seq); // identical artifacts never bump seq
 });
+
+// -- task prefixes (spec/30) ---------------------------------------------------------
+
+const PREFIX_CONFIG =
+  '[models.embedding]\nkind = "mock"\n' +
+  'document_prefix = "search_document: "\nquery_prefix = "search_query: "\n';
+
+test("document prefix is embedded but not stored", async () => {
+  const embedder = counting();
+  const root = copyBundle();
+  writeFileSync(join(root, "brainpick.toml"), PREFIX_CONFIG, "utf8");
+  await runCompile(root);
+  expect(embedder.embeddedTexts.length).toBeGreaterThan(0);
+  expect(embedder.embeddedTexts.every((t) => t.startsWith("search_document: "))).toBe(true);
+  const chunks = readFileSync(join(root, ".brainpick", "t2", "chunks.jsonl"), "utf8");
+  expect(chunks).not.toContain("search_document: "); // an instruction, not content
+});
+
+test("prefixes land in record and fingerprint", async () => {
+  counting();
+  const root = copyBundle();
+  writeFileSync(join(root, "brainpick.toml"), PREFIX_CONFIG, "utf8");
+  await runCompile(root);
+  const record = readJson(join(root, ".brainpick", "t2", "embedding.json"));
+  expect(record["document_prefix"]).toBe("search_document: ");
+  expect(record["query_prefix"]).toBe("search_query: ");
+  expect(record["fingerprint"]).toBe(
+    sha256Hex("mock||mock|16|search_document: |search_query: ").slice(0, 16),
+  );
+});
+
+test("no prefix keeps record shape", async () => {
+  counting();
+  const root = withMockConfig(copyBundle());
+  await runCompile(root);
+  const record = readJson(join(root, ".brainpick", "t2", "embedding.json"));
+  expect(record).not.toHaveProperty("document_prefix");
+  expect(record).not.toHaveProperty("query_prefix");
+});
+
+test("prefix change re-embeds everything", async () => {
+  const embedder = counting();
+  const root = withMockConfig(copyBundle());
+  await runCompile(root);
+  const total = embedder.embeddedTexts.length;
+  embedder.batches.length = 0;
+  writeFileSync(join(root, "brainpick.toml"), PREFIX_CONFIG, "utf8");
+  const result = await runCompile(root);
+  expect(result.changed).toBe(true);
+  expect(embedder.embeddedTexts).toHaveLength(total);
+});
+
+test("query time uses query prefix from record", async () => {
+  counting();
+  const root = copyBundle();
+  writeFileSync(join(root, "brainpick.toml"), PREFIX_CONFIG, "utf8");
+  await runCompile(root);
+  const seen: string[] = [];
+  vi.mocked(embedModule.makeEmbedder).mockReturnValue({
+    embed(texts: string[]) {
+      seen.push(...texts);
+      return new MockEmbedder().embed(texts);
+    },
+  });
+  const { semanticSearch } = await import("../src/query/vectors");
+  await semanticSearch(join(root, ".brainpick"), [], "kuu");
+  expect(seen).toEqual(["search_query: kuu"]);
+});
+
+test("chunk evidence starts at a whole line", async () => {
+  // a semantic hit's snippet is evidence, not a byte offset: a later chunk opens
+  // mid-line (the overlap is cut by characters), so its partial first line goes; the
+  // first chunk's heading lines add nothing the hit does not already name
+  const { chunkEvidence } = await import("../src/query/vectors");
+  const later = "nousee), tekijä on\n* **15:15** `nero` · learning — rules calibrated\n";
+  expect(chunkEvidence(later, 1)).toBe("* **15:15** `nero` · learning — rules calibrated");
+  const first = "# 2026-09-08\n\n## 2026-09-08\n\n* **23:00** `pipeless` · debug — SHAI-127 fixed\n";
+  expect(chunkEvidence(first, 0)).toBe("* **23:00** `pipeless` · debug — SHAI-127 fixed");
+  // a chunk opening inside an entry's continuation lines jumps to the next entry
+  const inside = "partial\n  more continuation of the previous entry\n* **16:00** `x` · note — next entry\n  its detail\n";
+  expect(chunkEvidence(inside, 2)).toBe("* **16:00** `x` · note — next entry its detail");
+  // prose stays prose: a list far down the chunk does not hijack the snippet
+  const prose = "Prose line one.\n" + "x".repeat(500) + "\n- a late item\n";
+  expect(chunkEvidence(prose, 0)!.startsWith("Prose line one. xxx")).toBe(true);
+  expect(chunkEvidence("tail of a sentence", 3)).toBe("tail of a sentence");
+  expect(chunkEvidence("   \n", 0)).toBeNull();
+});

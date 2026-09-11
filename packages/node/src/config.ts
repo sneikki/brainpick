@@ -75,6 +75,8 @@ export interface EmbeddingConfig {
   endpoint: string;
   model: string;
   dim: number; // 0 = unknown; discovered from the first embedding response
+  document_prefix: string; // task prefix for indexed text (spec/30), e.g. "search_document: "
+  query_prefix: string; // task prefix for queries, e.g. "search_query: "
 }
 
 export interface ExtractionConfig {
@@ -124,7 +126,7 @@ export function defaultConfig(): Config {
     index: { mode: "section", file: "index.md" },
     modules: { vectors: "auto", graph: "on", similarity_gaps: "auto", ui: true },
     models: {
-      embedding: { kind: "", endpoint: "", model: "", dim: 0 },
+      embedding: { kind: "", endpoint: "", model: "", dim: 0, document_prefix: "", query_prefix: "" },
       extraction: { kind: "", endpoint: "", model: "", api_key_env: "" },
     },
     serve: {

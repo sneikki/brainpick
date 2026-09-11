@@ -1,22 +1,26 @@
 /** MCP tool payloads (spec/70): budget shaping, forgiving resolution, guarded
  * writes, base_sha conflicts (the twin of packages/python/tests/test_mcp_tools.py). */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 import { afterEach, expect, test } from "vitest";
 
 import { loadConfig } from "../src/config";
 import { sha256Hex } from "../src/core/canonical";
 import {
+  extractSections,
   neighborsPayload,
+  outline,
   overviewPayload,
   readPayload,
   searchPayload,
+  serverClock,
   showPayload,
   tokensOf,
   writePayload,
 } from "../src/mcp";
+import { logQuery, newSessionId } from "../src/querylog";
 import { ServeState } from "../src/serve/state";
 import { cleanup, copyBundle, prependPath, stageFakeHenxels, stageT3Export, tempDir } from "./helpers";
 
@@ -35,10 +39,22 @@ function git(cwd: string, ...args: string[]): void {
 }
 
 const savedPath = process.env["PATH"];
+const realClock = serverClock.now;
 afterEach(() => {
   process.env["PATH"] = savedPath;
+  serverClock.now = realClock;
   cleanup();
 });
+
+/** Pin the server clock (spec/70 server-owned clocks): each write reads the next local
+ * wall-clock time on 2026-06-02, the last one repeating. Returns the first instant as
+ * the frontmatter stamp it becomes. */
+function setClock(...hhmm: string[]): string {
+  const instants = hhmm.map((t) => new Date(2026, 5, 2, Number(t.slice(0, 2)), Number(t.slice(3))));
+  let tick = 0;
+  serverClock.now = () => instants[Math.min(tick++, instants.length - 1)]!;
+  return instants[0]!.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
 
 async function makeState(root: string): Promise<ServeState> {
   const state = new ServeState(root, loadConfig(root));
@@ -115,13 +131,26 @@ test("overview similarity_gaps_open_count reads the artifact", async () => {
   expect(overviewPayload(state)["similarity_gaps_open_count"]).toBe(1);
 });
 
+test("search hits carry the matched snippet", async () => {
+  // a hit names WHERE in the doc the match is — the retriever's snippet rides along,
+  // so a long log-shaped page such as a journal day is not reduced to its title (spec/70)
+  const root = copyBundle();
+  const state = await makeState(root);
+  const result = await searchPayload(state, "tides", "keyword");
+  const top = (result["hits"] as Array<Record<string, unknown>>)[0]!;
+  expect(top["path"]).toBe("kuu.md");
+  expect(typeof top["snippet"]).toBe("string");
+  expect(String(top["snippet"]).toLowerCase()).toContain("tides");
+  expect(String(top["snippet"]).length).toBeLessThanOrEqual(260);
+});
+
 test("search hits have why not bodies", async () => {
   const result = await searchPayload(await makeState(copyBundle()), "aurinko");
   const hits = result["hits"] as Array<Record<string, unknown>>;
   expect(new Set(hits.map((h) => h["path"]))).toEqual(
     new Set(["aurinko.md", "komeetta.md", "planeetat.md", "yksinainen.md"]),
   );
-  expect(new Set(Object.keys(hits[0]!))).toEqual(new Set(["path", "title", "description", "score", "why"]));
+  expect(new Set(Object.keys(hits[0]!))).toEqual(new Set(["path", "title", "description", "score", "why", "snippet"]));
   expect(result["used_modes"]).toEqual(["keyword"]);
   expect(result["degraded_from"]).toBe("semantic"); // auto without T2 says so (spec/30)
   expect(result["truncated"]).toBe(false);
@@ -162,7 +191,7 @@ test("search semantic hits via mock vectors", async () => {
   const hits = semantic["hits"] as Array<Record<string, unknown>>;
   expect(hits.length).toBeGreaterThan(0);
   for (const h of hits) {
-    expect(new Set(Object.keys(h))).toEqual(new Set(["path", "title", "description", "score", "why"]));
+    expect(new Set(Object.keys(h))).toEqual(new Set(["path", "title", "description", "score", "why", "snippet"]));
   }
   const fused = await searchPayload(state, "aurinko", "auto");
   expect(fused["used_modes"]).toEqual(["keyword", "semantic"]);
@@ -352,6 +381,17 @@ test("write happy path bumps seq and timestamp", async () => {
   expect(readFileSync(join(root, "index.md"), "utf8")).toContain("- [Uusi kivi](uusi-kivi.md)");
 });
 
+test("write leaves frontmatter-free docs without a timestamp block", async () => {
+  // journals and OKF reserved files carry no frontmatter by contract; a write that
+  // passed henxels must not grow one on the way out (spec/70 step 4)
+  const root = copyBundle();
+  const state = await makeState(root);
+  const journal = "# 2026-06-01\n\n## 2026-06-01\n\n* **08:00** `kuu` · note — tides logged.\n";
+  const result = await writePayload(state, "paivakirja/2026-06-01", journal);
+  expect(result["ok"]).toBe(true);
+  expect(readFileSync(join(root, "paivakirja", "2026-06-01.md"), "utf8")).toBe(journal);
+});
+
 test("write append_section", async () => {
   const root = copyBundle();
   const state = await makeState(root);
@@ -360,6 +400,175 @@ test("write append_section", async () => {
   const text = readFileSync(join(root, "kuu.md"), "utf8");
   expect(text).toContain("## Nousuvesi");
   expect(text).toContain("The moon pulls"); // the original body survives
+});
+
+test("write add_entry slots into the newest-first day", async () => {
+  // mode add_entry (spec/70): one entry in, the server places it by time — a missing day
+  // is created with its head, a later entry goes first, an earlier one after, and the
+  // caller never echoes the day back.
+  setClock("09:00", "07:30", "11:15");
+  const root = copyBundle();
+  const state = await makeState(root);
+  const day = join(root, "paivakirja", "2026-06-02.md");
+  const first = "* **09:00** `kuu` · note — first.\n  more.\n";
+  expect((await writePayload(state, "paivakirja/2026-06-02", first, "add_entry"))["ok"]).toBe(true);
+  expect(readFileSync(day, "utf8")).toBe("# 2026-06-02\n\n## 2026-06-02\n\n" + first);
+  expect((await writePayload(state, "paivakirja/2026-06-02", "* **07:30** `kuu` · note — earlier.", "add_entry"))["ok"]).toBe(true);
+  expect((await writePayload(state, "paivakirja/2026-06-02", "* **11:15** `kuu` · note — later.", "add_entry"))["ok"]).toBe(true);
+  expect(readFileSync(day, "utf8")).toBe(
+    "# 2026-06-02\n\n## 2026-06-02\n\n" +
+      "* **11:15** `kuu` · note — later.\n\n" +
+      "* **09:00** `kuu` · note — first.\n  more.\n\n" +
+      "* **07:30** `kuu` · note — earlier.\n",
+  );
+  const bad = await writePayload(state, "paivakirja/2026-06-02", "## Not an entry\n", "add_entry");
+  expect(bad["ok"]).toBe(false);
+  expect(String(bad["instruction"])).toContain("HH:MM");
+  const page = await writePayload(state, "muistio", "* **10:00** `kuu` · note — x", "add_entry");
+  expect(page["ok"]).toBe(false);
+  expect(String(page["instruction"])).toContain("YYYY-MM-DD");
+  expect(existsSync(join(root, "muistio.md"))).toBe(false);
+});
+
+test("concurrent add_entry loses nothing", async () => {
+  // Fifty overlapping add_entry calls to one day (spec/70: writes are serialized server-side)
+  // — every entry lands, in time order, none overwritten.
+  const pad = (n: number) => String(n).padStart(2, "0");
+  setClock(...Array.from({ length: 50 }, (_, i) => `10:${pad(i)}`));
+  const root = copyBundle();
+  const state = await makeState(root);
+  const results = await Promise.all(
+    Array.from({ length: 50 }, (_, i) =>
+      writePayload(state, "paivakirja/2026-06-03", `* \`kuu\` · note — entry ${i}.`, "add_entry"),
+    ),
+  );
+  expect(results.every((r) => r["ok"] === true)).toBe(true);
+  const text = readFileSync(join(root, "paivakirja", "2026-06-03.md"), "utf8");
+  const times = text.split("\n").filter((l) => l.startsWith("* **")).map((l) => l.slice(4, 9));
+  expect(times).toEqual(Array.from({ length: 50 }, (_, i) => `10:${pad(49 - i)}`));
+  for (let i = 0; i < 50; i++) expect(text.split(`entry ${i}.`).length).toBe(2);
+});
+
+test("add_entry head is the server clock", async () => {
+  // spec/70 server-owned clocks: a model does not know the wall clock, so the entry head
+  // is the server's — an invented **HH:MM** is replaced, a missing one inserted.
+  setClock("07:33", "08:07");
+  const root = copyBundle();
+  const state = await makeState(root);
+  const day = join(root, "paivakirja", "2026-06-02.md");
+  const invented = await writePayload(state, "paivakirja/2026-06-02", "* **12:00** `kuu` · note — invented time.", "add_entry");
+  expect(invented["ok"]).toBe(true);
+  const bare = await writePayload(state, "paivakirja/2026-06-02", "* `kuu` · note — no time.\n  more.", "add_entry");
+  expect(bare["ok"]).toBe(true);
+  expect(readFileSync(day, "utf8")).toBe(
+    "# 2026-06-02\n\n## 2026-06-02\n\n" +
+      "* **08:07** `kuu` · note — no time.\n  more.\n\n" +
+      "* **07:33** `kuu` · note — invented time.\n",
+  );
+});
+
+test.skipIf(process.platform === "win32")("write stamps the timestamp before the referee", async () => {
+  // spec/70 step 2: henxels judges the stamped doc, so a contract that requires a timestamp
+  // is met by the server — never by a time the writer had to invent.
+  const stamp = setClock("10:00");
+  const root = copyBundle();
+  writeFileSync(join(root, "henxels.yaml"), "henxels: []\n", "utf8");
+  const bin = join(tempDir(), "bin");
+  const seen = join(tempDir(), "seen.md");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, "henxels"), `#!/bin/sh\ncat "$2" > '${seen}'\nexit 0\n`, { encoding: "utf8", mode: 0o755 });
+  process.env["PATH"] = prependPath(savedPath, bin);
+  const state = await makeState(root);
+  for (const [rel, content, mode] of [["uusi-kivi.md", NEW_DOC, "create"], ["kuu.md", KUU_REWRITE, "replace"]]) {
+    expect((await writePayload(state, rel!, content!, mode))["ok"]).toBe(true);
+    const judged = readFileSync(seen, "utf8");
+    expect(judged).toContain(`\ntimestamp: ${stamp}\n`);
+    expect(judged).not.toContain("08:30:00Z"); // the writer's own timestamp is overwritten
+    expect(readFileSync(join(root, rel!), "utf8")).toBe(judged);
+  }
+});
+
+// -- brain_write meta (spec/70): the frontmatter as data ----------------------------
+
+test("write meta is serialized by the server", async () => {
+  const stamp = setClock("10:00");
+  const root = copyBundle();
+  const state = await makeState(root);
+  const result = await writePayload(state, "uusi-kivi", "\n# Uusi kivi\n\nNear [Kuu](kuu.md).\n", "create", {
+    meta: {
+      type: "Concept", title: "Uusi kivi", description: "A new rock: hard, #1.",
+      tags: ["kivi", "a b: c"], timestamp: "2026-09-11T12:00:00Z", aliases: [],
+      lang: "yes", note: "Äänitys ", year: "2026",
+    },
+  });
+  expect(result["ok"]).toBe(true);
+  expect(readFileSync(join(root, "uusi-kivi.md"), "utf8")).toBe(
+    "---\ntype: Concept\ntitle: Uusi kivi\n" +
+      'description: "A new rock: hard, #1."\ntags: [kivi, "a b: c"]\naliases: []\n' +
+      'lang: "yes"\nnote: "Äänitys "\nyear: "2026"\n' +
+      `timestamp: ${stamp}\n---\n\n# Uusi kivi\n\nNear [Kuu](kuu.md).\n`,
+  );
+});
+
+test("write body-only replace keeps the frontmatter", async () => {
+  const stamp = setClock("10:00");
+  const root = copyBundle();
+  const state = await makeState(root);
+  expect((await writePayload(state, "kuu.md", "# Kuu\n\nPlain.\n", "replace"))["ok"]).toBe(true);
+  expect(readFileSync(join(root, "kuu.md"), "utf8")).toBe(
+    `---\ntype: Concept\ntags: [kuu]\ntimestamp: ${stamp}\n---\n\n# Kuu\n\nPlain.\n`,
+  );
+  const merged = await writePayload(state, "kuu.md", "# Kuu\n\nRewritten.\n", "replace", {
+    meta: { title: "Kuu", tags: null },
+  });
+  expect(merged["ok"]).toBe(true);
+  expect(readFileSync(join(root, "kuu.md"), "utf8")).toBe(
+    `---\ntype: Concept\ntimestamp: ${stamp}\ntitle: Kuu\n---\n\n# Kuu\n\nRewritten.\n`,
+  );
+});
+
+test("write meta rewrites whole key spans in place", async () => {
+  const stamp = setClock("10:00");
+  const root = copyBundle();
+  const state = await makeState(root);
+  const doc = "---\ntype: Concept\ntags:\n  - a\n  - b\ndescription: >\n  folded\n  text\ntitle: Old\n---\nbody\n";
+  const result = await writePayload(state, "spans", doc, "create", {
+    meta: { tags: ["c"], description: null, title: "New" },
+  });
+  expect(result["ok"]).toBe(true);
+  expect(readFileSync(join(root, "spans.md"), "utf8")).toBe(
+    `---\ntype: Concept\ntags: [c]\ntitle: New\ntimestamp: ${stamp}\n---\nbody\n`,
+  );
+});
+
+test("write append_section merges meta into the previous block", async () => {
+  const stamp = setClock("10:00");
+  const root = copyBundle();
+  const state = await makeState(root);
+  const result = await writePayload(state, "kuu.md", "## Nousuvesi\n\nSpring tides.\n", "append_section", {
+    meta: { description: "The moon." },
+  });
+  expect(result["ok"]).toBe(true);
+  const text = readFileSync(join(root, "kuu.md"), "utf8");
+  expect(text.startsWith(`---\ntype: Concept\ntags: [kuu]\ntimestamp: ${stamp}\ndescription: The moon.\n---\n\n# Kuu\n`)).toBe(true);
+  expect(text.endsWith("```\n\n## Nousuvesi\n\nSpring tides.\n")).toBe(true);
+});
+
+test("write meta rejects what it cannot serialize", async () => {
+  const root = copyBundle();
+  const state = await makeState(root);
+  for (const meta of [{ "bad key": "x" }, { n: 3 }, { tags: ["a", 1] }, { nested: { a: "b" } }]) {
+    const result = await writePayload(state, "uusi", "# X\n", "create", { meta: meta as Record<string, unknown> });
+    expect(result["ok"]).toBe(false);
+    expect(String(result["instruction"])).toContain("meta");
+  }
+  expect(existsSync(join(root, "uusi.md"))).toBe(false);
+  const entry = await writePayload(state, "paivakirja/2026-06-04", "* `kuu` · note — x", "add_entry", {
+    meta: { title: "X" },
+  });
+  expect(entry["ok"]).toBe(false);
+  expect(String(entry["instruction"])).toContain("frontmatter-free");
+  expect(existsSync(join(root, "paivakirja", "2026-06-04.md"))).toBe(false);
 });
 
 test("write gate refusal", async () => {
@@ -389,6 +598,22 @@ test("write henxels violation restores", async () => {
   expect(replaced["ok"]).toBe(false);
   expect(readFileSync(join(root, "kuu.md"), "utf8")).toContain("tides"); // bytes restored
   expect(state.seq).toBe(1);
+});
+
+test("write honours a contract above the bundle", async () => {
+  // spec/80 layout: henxels.yaml at the repo root, the bundle below it. `auto` must
+  // still run the contract — henxels resolves it by walking up, and so must we
+  const root = copyBundle();
+  writeFileSync(join(dirname(root), "henxels.yaml"), "henxels: []\n", "utf8");
+  const bin = stageFakeHenxels(join(tempDir(), "bin"), "kebab-case or bust");
+  process.env["PATH"] = prependPath(savedPath, bin);
+  const state = await makeState(root);
+  expect(state.config.validate.henxels).toBe("auto");
+
+  const created = await writePayload(state, "uusi.md", "# X\n");
+  expect(created["ok"]).toBe(false);
+  expect((created["instruction"] as string).trim()).toBe("kebab-case or bust");
+  expect(exists(join(root, "uusi.md"))).toBe(false);
 });
 
 test("write henxels missing warns", async () => {
@@ -538,4 +763,66 @@ test("showPayload clear has a dedicated hint", async () => {
     seq: 1,
     hint: "cleared — every open UI dropped its spotlight and caption.",
   });
+});
+
+
+// -- journal entries as read units (spec/70) ------------------------------------------
+
+const DAY =
+  "# 2026-09-09\n\n## 2026-09-09\n\n" +
+  "* **05:50** `pipeless` · debug — proof audits passed on version/229\n  audit details\n\n" +
+  "* **05:30** `nuutti-brain` · feature — every harness wired\n  wiring details\n  more wiring\n\n" +
+  "* **05:05** `pipeless` · debug — listing fallback stops early\n  listing details\n";
+
+test("outline lists journal entries and sections take a time", () => {
+  const lines = outline(DAY);
+  expect(lines.slice(0, 2)).toEqual(["# 2026-09-09", "## 2026-09-09"]);
+  expect(lines[2]!.startsWith("* **05:50**") && lines.length === 5).toBe(true);
+  const one = extractSections(DAY, ["05:30"]);
+  expect(one).toBe("* **05:30** `nuutti-brain` · feature — every harness wired\n  wiring details\n  more wiring\n");
+  const two = extractSections(DAY, ["05:50", "05:05"]);
+  expect(two.split("* **").length - 1).toBe(2);
+  expect(two.includes("05:30")).toBe(false);
+  expect(extractSections(DAY, ["## 2026-09-09"]).split("* **").length - 1).toBe(3); // a heading still takes its whole section
+});
+
+test("query log writes one raw line per search", () => {
+  const dir = tempDir();
+  const saved = { log: process.env["BRAINPICK_QUERY_LOG"], dir: process.env["BRAINPICK_QUERY_LOG_DIR"] };
+  process.env["BRAINPICK_QUERY_LOG_DIR"] = dir;
+  delete process.env["BRAINPICK_QUERY_LOG"];
+  try {
+    const sid = newSessionId();
+    const request = {
+      situation: "the deploy failed on a sidecar race",
+      terms: ["FUSE"],
+      mode: "auto",
+      limit: 10,
+      scope: null,
+    };
+    const result = {
+      hits: [{ path: "journals/2026-09-09.md" }],
+      used_modes: ["keyword", "semantic"],
+      degraded_from: null,
+    };
+    const path = logQuery(sid, "nuutti-brain", request, result);
+    logQuery(sid, "nuutti-brain", request, result);
+    expect(path).toBe(join(dir, `${sid}.jsonl`));
+    const lines = readFileSync(path!, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    expect(lines.length).toBe(2);
+    expect(lines[0].situation).toBe(request.situation);
+    expect(lines[0].terms).toEqual(["FUSE"]);
+    expect(lines[0].hits).toEqual(["journals/2026-09-09.md"]);
+    expect(lines[0].used_modes).toEqual(["keyword", "semantic"]);
+    process.env["BRAINPICK_QUERY_LOG"] = "0";
+    expect(logQuery(sid, "nuutti-brain", request, result)).toBeNull();
+  } finally {
+    if (saved.log === undefined) delete process.env["BRAINPICK_QUERY_LOG"];
+    else process.env["BRAINPICK_QUERY_LOG"] = saved.log;
+    if (saved.dir === undefined) delete process.env["BRAINPICK_QUERY_LOG_DIR"];
+    else process.env["BRAINPICK_QUERY_LOG_DIR"] = saved.dir;
+  }
 });

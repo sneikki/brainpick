@@ -260,3 +260,83 @@ def test_full_recompile_re_embeds_everything_but_stays_byte_stable(kotiaurinko, 
     result = run_compile(kotiaurinko, full=True)
     assert len(counting.embedded_texts) == total  # ignore the store, rebuild all
     assert result.seq == first.seq  # identical artifacts never bump seq
+
+
+# -- task prefixes (spec/30) ---------------------------------------------------------
+
+PREFIX_CONFIG = (
+    '[models.embedding]\nkind = "mock"\n'
+    'document_prefix = "search_document: "\nquery_prefix = "search_query: "\n'
+)
+
+
+def test_document_prefix_is_embedded_but_not_stored(kotiaurinko, counting):
+    (kotiaurinko / "brainpick.toml").write_text(PREFIX_CONFIG, encoding="utf-8")
+    run_compile(kotiaurinko)
+    assert counting.embedded_texts
+    assert all(t.startswith("search_document: ") for t in counting.embedded_texts)
+    chunks = (kotiaurinko / ".brainpick" / "t2" / "chunks.jsonl").read_text(encoding="utf-8")
+    assert "search_document: " not in chunks  # the prefix is an instruction, not content
+
+
+def test_prefixes_land_in_record_and_fingerprint(kotiaurinko, counting):
+    (kotiaurinko / "brainpick.toml").write_text(PREFIX_CONFIG, encoding="utf-8")
+    run_compile(kotiaurinko)
+    record = read_json(kotiaurinko / ".brainpick" / "t2" / "embedding.json")
+    assert record["document_prefix"] == "search_document: "
+    assert record["query_prefix"] == "search_query: "
+    expected = hashlib.sha256(b"mock||mock|16|search_document: |search_query: ").hexdigest()[:16]
+    assert record["fingerprint"] == expected
+
+
+def test_no_prefix_keeps_record_shape(kotiaurinko, counting):
+    run_compile(with_mock_config(kotiaurinko))
+    record = read_json(kotiaurinko / ".brainpick" / "t2" / "embedding.json")
+    assert "document_prefix" not in record and "query_prefix" not in record
+
+
+def test_prefix_change_re_embeds_everything(kotiaurinko, counting):
+    run_compile(with_mock_config(kotiaurinko))
+    total = len(counting.embedded_texts)
+    counting.batches.clear()
+    (kotiaurinko / "brainpick.toml").write_text(PREFIX_CONFIG, encoding="utf-8")
+    result = run_compile(kotiaurinko)
+    assert result.changed is True
+    assert len(counting.embedded_texts) == total
+
+
+def test_query_time_uses_query_prefix_from_record(kotiaurinko, counting, monkeypatch):
+    from brainpick.query import vectors as vectors_mod
+
+    (kotiaurinko / "brainpick.toml").write_text(PREFIX_CONFIG, encoding="utf-8")
+    run_compile(kotiaurinko)
+    seen: list[str] = []
+
+    class Capturing:
+        def embed(self, texts):
+            seen.extend(texts)
+            return MockEmbedder().embed(texts)
+
+    monkeypatch.setattr(vectors_mod, "make_embedder", lambda *a, **k: Capturing())
+    vectors_mod.semantic_search(kotiaurinko / ".brainpick", [], "kuu")
+    assert seen == ["search_query: kuu"]
+
+
+def test_chunk_evidence_starts_at_a_whole_line():
+    """A semantic hit's snippet is evidence, not a byte offset: a later chunk opens
+    mid-line (the overlap is cut by characters), so its partial first line goes; the
+    first chunk's heading lines add nothing the hit does not already name."""
+    from brainpick.query import vectors as vectors_mod
+
+    later = "nousee), tekijä on\n* **15:15** `nero` · learning — rules calibrated\n"
+    assert vectors_mod.chunk_evidence(later, 1) == "* **15:15** `nero` · learning — rules calibrated"
+    first = "# 2026-09-08\n\n## 2026-09-08\n\n* **23:00** `pipeless` · debug — SHAI-127 fixed\n"
+    assert vectors_mod.chunk_evidence(first, 0) == "* **23:00** `pipeless` · debug — SHAI-127 fixed"
+    # a chunk opening inside an entry's continuation lines jumps to the next entry
+    inside = "partial\n  more continuation of the previous entry\n* **16:00** `x` · note — next entry\n  its detail\n"
+    assert vectors_mod.chunk_evidence(inside, 2) == "* **16:00** `x` · note — next entry its detail"
+    # prose stays prose: a list far down the chunk does not hijack the snippet
+    prose = "Prose line one.\n" + "x" * 500 + "\n- a late item\n"
+    assert vectors_mod.chunk_evidence(prose, 0).startswith("Prose line one. xxx")
+    assert vectors_mod.chunk_evidence("tail of a sentence", 3) == "tail of a sentence"
+    assert vectors_mod.chunk_evidence("   \n", 0) is None

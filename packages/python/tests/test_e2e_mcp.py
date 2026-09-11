@@ -7,11 +7,14 @@ import sys
 import pytest
 
 from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from mcp.client.stdio import get_default_environment, stdio_client
 
 from brainpick.compile.pipeline import run_compile
 
 from conftest import stage_t3_export
+
+# spawned servers must not write the query log (spec/70) into the developer's XDG state
+_SERVER_ENV = {**get_default_environment(), "BRAINPICK_QUERY_LOG": "0"}
 
 NEW_DOC = (
     "---\ntype: Concept\ntitle: Uusi kivi\ndescription: A new rock.\n---\n\n"
@@ -52,7 +55,7 @@ def _run_scenario(coro):
 
 async def _scenario(root):
     params = StdioServerParameters(
-        command=sys.executable, args=["-m", "brainpick", "mcp", "--root", str(root)],
+        command=sys.executable, args=["-m", "brainpick", "mcp", "--root", str(root)], env=_SERVER_ENV,
     )
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
@@ -68,7 +71,7 @@ async def _scenario(root):
             assert overview["counts"]["docs"] == 10
             assert overview["hint"]
 
-            search = await _call(session, "brain_search", {"query": "aurinko"})
+            search = await _call(session, "brain_search", {"situation": "the star at the centre", "terms": ["aurinko"]})
             assert "aurinko.md" in {h["path"] for h in search["hits"]}
             assert search["used_modes"] == ["keyword"]
 
@@ -83,7 +86,10 @@ async def _scenario(root):
                 "maa.md", "kuu.md", "planeetat.md", "index.md",
             }
 
-            written = await _call(session, "brain_write", {"doc": "uusi-kivi", "content": NEW_DOC})
+            written = await _call(session, "brain_write", {  # meta crosses the transport (spec/70)
+                "doc": "uusi-kivi", "content": "# Uusi kivi\n\nNear [Kuu](kuu.md).\n",
+                "meta": {"type": "Concept", "title": "Uusi kivi", "description": "A new rock."},
+            })
             assert written["ok"] is True
             assert written["path"] == "uusi-kivi.md"
             assert written["seq"] == 2
@@ -106,6 +112,7 @@ def test_mcp_stdio_roundtrip(kotiaurinko):
     run_compile(kotiaurinko)
     _run_scenario(_scenario(kotiaurinko))
     text = (kotiaurinko / "uusi-kivi.md").read_text(encoding="utf-8")
+    assert text.startswith("---\ntype: Concept\ntitle: Uusi kivi\ndescription: A new rock.\ntimestamp: ")
     assert re.search(r"^timestamp: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", text, re.MULTILINE)
     manifest = json.loads((kotiaurinko / ".brainpick" / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["seq"] == 2
@@ -114,19 +121,19 @@ def test_mcp_stdio_roundtrip(kotiaurinko):
 
 async def _semantic_scenario(root):
     params = StdioServerParameters(
-        command=sys.executable, args=["-m", "brainpick", "mcp", "--root", str(root)],
+        command=sys.executable, args=["-m", "brainpick", "mcp", "--root", str(root)], env=_SERVER_ENV,
     )
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
 
             semantic = await _call(session, "brain_search",
-                                   {"query": "kuu vuorovesi maa", "mode": "semantic"})
+                                   {"situation": "kuu vuorovesi maa", "terms": [], "mode": "semantic"})
             assert semantic["used_modes"] == ["semantic"]
             assert semantic["degraded_from"] is None
             assert semantic["hits"]
 
-            fused = await _call(session, "brain_search", {"query": "aurinko", "mode": "auto"})
+            fused = await _call(session, "brain_search", {"situation": "the star at the centre", "terms": ["aurinko"], "mode": "auto"})
             assert fused["used_modes"] == ["keyword", "semantic"]
             assert fused["degraded_from"] is None
             assert "aurinko.md" in {h["path"] for h in fused["hits"]}
@@ -143,7 +150,7 @@ def test_mcp_semantic_search_over_mock_vectors(kotiaurinko):
 
 async def _t3_scenario(root):
     params = StdioServerParameters(
-        command=sys.executable, args=["-m", "brainpick", "mcp", "--root", str(root)],
+        command=sys.executable, args=["-m", "brainpick", "mcp", "--root", str(root)], env=_SERVER_ENV,
     )
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
@@ -159,7 +166,7 @@ async def _t3_scenario(root):
             assert {"src": "kuu", "dst": "vuorovesi"} in neighbors["edges"]
 
             orbits = await _call(session, "brain_search",
-                                 {"query": "what orbits the star", "mode": "graph", "limit": 4})
+                                 {"situation": "what orbits the star", "terms": [], "mode": "graph", "limit": 4})
             assert {h["path"] for h in orbits["hits"]} == {
                 "aurinko.md", "komeetta.md", "maa.md", "planeetat.md",
             }
@@ -186,7 +193,7 @@ KUU_REWRITE = (
 
 async def _conflict_scenario(root):
     params = StdioServerParameters(
-        command=sys.executable, args=["-m", "brainpick", "mcp", "--root", str(root)],
+        command=sys.executable, args=["-m", "brainpick", "mcp", "--root", str(root)], env=_SERVER_ENV,
     )
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
@@ -239,7 +246,7 @@ def test_mcp_write_conflict_roundtrip(kotiaurinko):
 async def _federated_scenario(aurinko, kirja, registry):
     import os
 
-    env = {**os.environ, "BRAINPICK_REGISTRY": str(registry)}
+    env = {**os.environ, "BRAINPICK_REGISTRY": str(registry), "BRAINPICK_QUERY_LOG": "0"}
     # no --root: the registry decides — the "one MCP entry for every brain" setup
     params = StdioServerParameters(command=sys.executable, args=["-m", "brainpick", "mcp"],
                                    cwd=str(aurinko), env=env)
@@ -254,11 +261,11 @@ async def _federated_scenario(aurinko, kirja, registry):
             assert overview["brains"][1]["role"] == "user"
             assert overview["bundle"] == "aurinko"
 
-            search = await _call(session, "brain_search", {"query": "kuu", "mode": "keyword"})
+            search = await _call(session, "brain_search", {"situation": "the moon", "terms": ["kuu"], "mode": "keyword"})
             assert {h["brain"] for h in search["hits"]} == {"aurinko", "kirja"}
             assert search["searched"] == ["aurinko", "kirja"]
 
-            scoped = await _call(session, "brain_search", {"query": "kuu", "scope": "me"})
+            scoped = await _call(session, "brain_search", {"situation": "the moon", "terms": ["kuu"], "scope": "me"})
             assert {h["brain"] for h in scoped["hits"]} == {"kirja"}
 
             read_result = await _call(session, "brain_read", {"doc": "kirja:kahvi.md"})

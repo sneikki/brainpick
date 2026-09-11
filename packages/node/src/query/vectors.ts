@@ -11,6 +11,7 @@ import { VectorStore } from "../vectorstore";
 import { SNIPPET_WINDOW, type SearchHit } from "./keyword";
 
 const OVERFETCH = 4; // chunks per requested doc — several chunks may share a document
+const ENTRY_LOOKAHEAD = 400; // chars: how far into a chunk a column-0 list item may start the snippet
 
 /** T2 artifacts are missing or unreadable — callers degrade to keyword. */
 export class SemanticUnavailable extends Error {}
@@ -35,6 +36,32 @@ function round6(x: number): number {
 /** spec/50-shaped hits with source "semantic". Query-time embedding MUST use
  * the t2/embedding.json record — that is how one engine searches vectors the
  * other compiled. */
+/** The snippet a semantic hit shows: the chunk's evidence from its first WHOLE line.
+ * The chunker cuts by character count, so a later chunk (ord > 0) opens mid-line inside
+ * the overlap — that partial line is dropped; leading blank and heading lines are
+ * skipped too, since the hit already names the doc. In a log-shaped doc an entry is a
+ * column-0 list item with indented continuation lines, so when one starts within the
+ * first ENTRY_LOOKAHEAD chars the snippet opens there rather than mid-entry. A chunk
+ * that is a single partial line still yields its head rather than nothing. */
+export function chunkEvidence(text: string, ord: number): string | null {
+  let lines = text.split("\n");
+  if (ord > 0 && lines.length > 1) lines = lines.slice(1);
+  while (lines.length > 0 && (lines[0]!.trim() === "" || lines[0]!.trimStart().startsWith("#"))) lines.shift();
+  let offset = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (offset > ENTRY_LOOKAHEAD) break;
+    const line = lines[i]!;
+    if (line.startsWith("* ") || line.startsWith("- ")) {
+      lines = lines.slice(i);
+      break;
+    }
+    offset += line.length + 1;
+  }
+  const body = lines.length > 0 ? lines.join("\n") : text;
+  const snippet = pySplitWhitespace(cpHead(body, SNIPPET_WINDOW)).join(" ");
+  return snippet !== "" ? snippet : null;
+}
+
 export async function semanticSearch(
   bp: string,
   records: readonly DocRecord[],
@@ -48,7 +75,7 @@ export async function semanticSearch(
     String(record["model"] ?? ""),
     process.env["OPENAI_API_KEY"] ?? "",
   );
-  const [vector] = await embedder.embed([query]);
+  const [vector] = await embedder.embed([String(record["query_prefix"] ?? "") + query]);
   if (!vector!.some((x) => x !== 0)) {
     return []; // an all-zero query vector has no cosine neighborhood
   }
@@ -67,12 +94,11 @@ export async function semanticSearch(
     seen.add(doc);
     const meta = byPath.get(doc);
     if (meta === undefined) continue; // a vector for a doc that no longer exists — stale store, skip
-    const snippet = pySplitWhitespace(cpHead(String(row["text"]), SNIPPET_WINDOW)).join(" ");
     hits.push({
       description: meta.description,
       path: doc,
       score: round6(1.0 - Number(row["_distance"] ?? 0.0)),
-      snippet: snippet !== "" ? snippet : null,
+      snippet: chunkEvidence(String(row["text"]), Number(row["ord"] ?? 0)),
       source: "semantic",
       title: meta.title,
     });

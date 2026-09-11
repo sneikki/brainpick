@@ -81,41 +81,77 @@ export function ensureTitles(hits: SearchHit[], titleHits: SearchHit[], limit: n
   return [...missing, ...hits].slice(0, limit);
 }
 
+/** [keyword query, semantic query, title query] — spec/50 two-input search.
+ *
+ * `terms` (identifiers, verbatim) feed the keyword engine and `situation` (the
+ * episode in sentences) feeds the semantic engine; a bare `query` feeds both, the
+ * legacy single-string shape. The title query is everything, so a named page is
+ * injected whichever half named it. Mirrors router.split_query. */
+export function splitQuery(
+  query: string | null | undefined,
+  terms: string[] | null | undefined,
+  situation: string | null | undefined,
+): [string, string, string] {
+  if ((terms === null || terms === undefined) && (situation === null || situation === undefined)) {
+    const q = String(query || "");
+    return [q, q, q];
+  }
+  // The semantic engine sees only the situation (an identifier list embeds to nothing
+  // useful); the keyword engine sees the terms AND the situation — a sentence costs BM25
+  // only function-word noise, and its nouns still match. Mirrors router.split_query.
+  const ids = (terms ?? [])
+    .map((t) => String(t))
+    .filter((t) => t.trim() !== "")
+    .join(" ")
+    .trim();
+  const sem = String(situation || "").trim();
+  const both = [ids, sem].filter((part) => part !== "").join(" ");
+  return [both, sem, both];
+}
+
 /** The spec/50 response body: {"hits", "used_modes", "degraded_from"}.
  *
- * `semanticFn(query, limit)` runs the vector retriever; callers wire it to
- * query/vectors.semanticSearch. Any semantic failure degrades to keyword —
- * a missing tier downgrades the answer, never errors the call. */
+ * Two inputs, two engines: `situation` alone goes to the semantic retriever, the
+ * keyword retriever gets `terms` plus the situation (a legacy `query` goes to both). `semanticFn(query, limit)` runs
+ * the vector retriever; callers wire it to query/vectors.semanticSearch. Any semantic
+ * failure degrades to keyword — a missing tier downgrades the answer, never errors
+ * the call. An empty half simply contributes no ranking: terms alone is a keyword
+ * search, a situation alone is a semantic one. */
 export async function runSearch(
   records: DocRecord[],
   tiers: Record<string, unknown>,
-  query: string,
+  query: string | null | undefined,
   mode: unknown = "auto",
   limit = 8,
   semanticFn: SemanticFn | null = null,
   graphFn: GraphFn | null = null,
   linkGraph: Graph | null = null,
+  terms: string[] | null = null,
+  situation: string | null = null,
 ): Promise<SearchBody> {
   const resolved = resolveMode(mode);
   const t2Fresh = tiers["t2"] === "fresh" && semanticFn !== null;
   const t3On = graphFn !== null;
+  const [kwQuery, semQuery, titleQuery] = splitQuery(query, terms, situation);
+  // the keyword engine's fallback text when it has no terms of its own
+  const kwOrSem = kwQuery || semQuery;
 
   if (resolved === "keyword") {
-    return body(keywordSearch(records, query, limit), ["keyword"], null);
+    return body(keywordSearch(records, kwOrSem, limit), ["keyword"], null);
   }
   if (resolved === "graph") {
-    if (t3On) return body(graphFn!(query, limit), ["graph"], null);
+    if (t3On) return body(graphFn!(semQuery || kwQuery, limit), ["graph"], null);
     // T3 absent: degrade to a T1 link-walk over keyword hits (spec/40)
     const hits = linkGraph
-      ? linkWalkSearch(linkGraph, records, query, limit)
-      : keywordSearch(records, query, limit);
+      ? linkWalkSearch(linkGraph, records, kwOrSem, limit)
+      : keywordSearch(records, kwOrSem, limit);
     return body(hits, ["keyword"], "graph");
   }
 
   let semanticHits: SearchHit[] | null = null;
-  if (t2Fresh) {
+  if (t2Fresh && semQuery !== "") {
     try {
-      semanticHits = await semanticFn!(query, limit);
+      semanticHits = await semanticFn!(semQuery, limit);
     } catch {
       semanticHits = null; // degrade below; T2 trouble must never error a search
     }
@@ -124,25 +160,26 @@ export async function runSearch(
   // A doc the query NAMES by title is surfaced in every retrieval mode — vectors miss
   // short/technical title words, and RRF can bury a strong keyword title hit, so this
   // guarantees the named page never goes missing (only injected when actually absent).
-  const titleHits = titleSearch(records, query, limit);
+  const titleHits = titleSearch(records, titleQuery, limit);
 
   if (resolved === "semantic") {
     if (semanticHits === null) {
-      return body(keywordSearch(records, query, limit), ["keyword"], "semantic");
+      return body(keywordSearch(records, semQuery || kwQuery, limit), ["keyword"], "semantic");
     }
     return body(ensureTitles(semanticHits, titleHits, limit), ["semantic"], null);
   }
 
   // auto: fuse whatever is available (spec/30: RRF k=60, dedupe by document).
   // The entity graph joins only for relation-shaped queries (spec/40).
-  const keywordHits = keywordSearch(records, query, limit);
-  const rankings: Record<string, SearchHit[]> = { keyword: keywordHits };
+  const rankings: Record<string, SearchHit[]> = { keyword: keywordSearch(records, kwOrSem, limit) };
   if (semanticHits !== null) rankings["semantic"] = semanticHits;
-  if (t3On && isRelational(query)) rankings["graph"] = graphFn!(query, limit);
+  if (t3On && isRelational(semQuery || kwQuery)) rankings["graph"] = graphFn!(semQuery || kwQuery, limit);
 
-  const degradedFrom = semanticHits === null ? "semantic" : null;
-  if (Object.keys(rankings).length === 1) {
-    return body(ensureTitles(keywordHits, titleHits, limit), ["keyword"], degradedFrom);
+  const degradedFrom = semanticHits === null && semQuery !== "" ? "semantic" : null;
+  const names = Object.keys(rankings);
+  if (names.length === 1) {
+    const only = names[0]!;
+    return body(ensureTitles(rankings[only]!, titleHits, limit), [only], degradedFrom);
   }
   const usedModes = ["keyword", "semantic", "graph"].filter((name) => name in rankings);
   return body(ensureTitles(rrfFuse(rankings, limit), titleHits, limit), usedModes, degradedFrom);

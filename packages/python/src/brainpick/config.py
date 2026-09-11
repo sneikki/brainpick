@@ -114,6 +114,8 @@ class EmbeddingConfig:
     endpoint: str = ""
     model: str = ""
     dim: int = 0        # 0 = unknown; discovered from the first embedding response
+    document_prefix: str = ""  # task prefix for indexed text (spec/30), e.g. "search_document: "
+    query_prefix: str = ""     # task prefix for queries, e.g. "search_query: "
 
 
 @dataclass

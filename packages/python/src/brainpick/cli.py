@@ -182,8 +182,18 @@ def _cmd_search(args: argparse.Namespace) -> int:
     from brainpick.mcp_server import search_payload
     from brainpick.query.present import present_search, to_json
 
-    payload = search_payload(state, args.query, mode=args.mode, limit=args.limit)
-    print(to_json(payload) if args.json else present_search(payload, args.query))
+    two_input = args.situation is not None or args.terms
+    payload = search_payload(state, None if two_input else args.query, mode=args.mode, limit=args.limit,
+                             terms=list(args.terms or []) if two_input else None,
+                             situation=(args.situation or "") if two_input else None)
+    shown = args.query or " ".join(part for part in (" ".join(args.terms or []), args.situation or "") if part)
+    if args.session:
+        from brainpick.mcp_server import _brain_name
+        from brainpick.querylog import log_query
+
+        log_query(args.session, _brain_name(state), {"situation": args.situation, "terms": list(args.terms or []),
+                  "query": args.query, "mode": args.mode, "limit": args.limit, "scope": None}, payload)
+    print(to_json(payload) if args.json else present_search(payload, shown))
     return 0
 
 
@@ -292,7 +302,6 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
 def _cmd_mcp(args: argparse.Namespace) -> int:
     # stdio is the protocol channel: nothing may print to stdout here
-    from brainpick.config import load_config
     from brainpick.federation import resolve_brain_set
     from brainpick.mcp_server import WRITES_OFF_REFUSAL, create_mcp_server
 
@@ -303,7 +312,7 @@ def _cmd_mcp(args: argparse.Namespace) -> int:
     if brain_set.federated:
         target = brain_set
         refusal = WRITES_OFF_REFUSAL if all(
-            load_config(b.root).serve.writes == "off" for b in brain_set.brains) else None
+            b.load_config().serve.writes == "off" for b in brain_set.brains) else None
     else:
         target = brain_set.state_for(brain_set.brains[0])
         refusal = WRITES_OFF_REFUSAL if target.config.serve.writes == "off" else None
@@ -454,7 +463,14 @@ def build_parser() -> argparse.ArgumentParser:
     # The four query mirrors — the same router/state the MCP tools and REST use,
     # in plain terminal form (add --json for the raw MCP payload).
     p_search = sub.add_parser("search", help="search the compiled brain (the brain_search tool, in the terminal)")
-    p_search.add_argument("query", help="the search query")
+    p_search.add_argument("query", nargs="?", default=None,
+                          help="a single query string, seen by both engines (legacy shape)")
+    p_search.add_argument("--situation", default=None,
+                          help="the episode in sentences — the semantic engine's input")
+    p_search.add_argument("--terms", nargs="*", default=None,
+                          help="identifiers verbatim — the keyword engine's input")
+    p_search.add_argument("--session", default=None,
+                          help="log this query raw under this session id (spec/70 query log)")
     p_search.add_argument("--mode", default="auto",
                           help="auto | keyword | semantic | graph (unknown falls back to auto)")
     p_search.add_argument("--limit", type=int, default=8, help="max hits (default: 8)")

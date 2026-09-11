@@ -8,7 +8,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { readFileSync, statSync, unlinkSync } from "node:fs";
-import { basename, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -25,7 +25,8 @@ import { cpLen, PY_SPACE_CLASS, pyFloatRepr, pyRstrip, pySplitLines, pyStrip } f
 import { needsShellForScript, which } from "./detect";
 import { makeChat } from "./llm";
 import { findBase, resolve as resolveMerge } from "./merge";
-import { KNOWN_MODES, runSearch } from "./query/router";
+import { KNOWN_MODES, runSearch, splitQuery } from "./query/router";
+import { logQuery, newSessionId } from "./querylog";
 import type { SearchHit } from "./query/keyword";
 import { bfsNeighborhood, jsonable, resolveDoc, type ServeState } from "./serve/state";
 import { recompileAndBroadcast } from "./serve/watcher";
@@ -155,10 +156,12 @@ function why(hit: SearchHit, query: string): string {
 
 async function singleSearch(
   state: ServeState,
-  query: string,
+  query: string | null | undefined,
   mode: unknown = "auto",
   limit: unknown = 8,
   budgetTokens?: number | null,
+  terms: string[] | null = null,
+  situation: string | null = null,
 ): Promise<Record<string, unknown>> {
   const budget = budgetTokens || 1200;
   let requested = String(mode || "auto");
@@ -179,20 +182,24 @@ async function singleSearch(
   const body = await runSearch(
     state.records,
     state.tiers(),
-    String(query || ""),
+    query,
     requested,
     boundedLimit,
     state.semanticFn(),
     state.graphFn(),
     state.graph,
+    terms,
+    situation,
   );
+  const whyQuery = splitQuery(query, terms, situation)[2];
   const raw = body.hits;
   const hits = raw.map((h) => ({
     path: h.path,
     title: h.title,
     description: h.description,
     score: h.score,
-    why: why(h, query),
+    why: why(h, whyQuery),
+    snippet: h.snippet ?? null,
   }));
   const result: Record<string, unknown> = {
     hits,
@@ -236,22 +243,47 @@ function loadDoc(state: ServeState, record: DocRecord): [Record<string, unknown>
   return [meta, record.text];
 }
 
-function extractSections(body: string, wanted: readonly unknown[]): string {
+const ENTRY = /^\* \*\*(\d{2}:\d{2})\*\*/;
+const ENTRY_OUTLINE_CHARS = 120;
+
+/** Headings, and — for a log-shaped doc such as a journal day — every entry head
+ * (`* **HH:MM** …`, trimmed), so `sections` can name an entry by its time. */
+export function outline(body: string): string[] {
+  const lines: string[] = [];
+  for (const raw of pySplitLines(body)) {
+    const line = pyRstrip(raw);
+    if (HEADING.test(line)) lines.push(line);
+    else if (ENTRY.test(line)) {
+      const arr = [...line];
+      lines.push(arr.length <= ENTRY_OUTLINE_CHARS ? line : pyRstrip(arr.slice(0, ENTRY_OUTLINE_CHARS).join("")) + " …");
+    }
+  }
+  return lines;
+}
+
+/** The named headings' sections, and the named log entries: a wanted `HH:MM` keeps the
+ * `* **HH:MM**` bullet with its continuation lines, up to the next entry or heading. */
+export function extractSections(body: string, wanted: readonly unknown[]): string {
   const wantedL = new Set(wanted.map((w) => pyStrip(pyStrip(String(w)).replace(/^#+/, "")).toLowerCase()));
   const kept: string[] = [];
   let keep = false;
   let level = 0;
+  let entry = false;
   for (const line of pySplitLines(body)) {
     const match = HEADING.exec(line);
+    const head = ENTRY.exec(line);
     if (match) {
+      entry = false;
       if (wantedL.has(pyStrip(match[2]!).toLowerCase())) {
         keep = true;
         level = match[1]!.length;
       } else if (keep && match[1]!.length <= level) {
         keep = false;
       }
+    } else if (head) {
+      entry = wantedL.has(head[1]!);
     }
-    if (keep) kept.push(line);
+    if (keep || entry) kept.push(line);
   }
   return pyStrip(kept.join("\n")) + (kept.length > 0 ? "\n" : "");
 }
@@ -288,14 +320,11 @@ function singleRead(
 
   const record = payload as DocRecord;
   const [frontmatter, body] = loadDoc(state, record);
-  const outline = pySplitLines(body)
-    .filter((line) => HEADING.test(line))
-    .map((line) => pyRstrip(line));
   const content = sections && sections.length > 0 ? extractSections(body, sections) : body;
   const result: Record<string, unknown> = {
     path: record.path,
     frontmatter: jsonable(frontmatter),
-    outline,
+    outline: outline(body),
     content,
     neighbors: state.neighborsOf(record.path),
     truncated: false,
@@ -475,26 +504,35 @@ export function resolveWritePath(state: ServeState, doc: unknown): [string | nul
   return [rel, null];
 }
 
+/** Whether a henxels contract applies to `bundle`: at its root or in any directory
+ * above it — henxels resolves the contract by walking up from the checked path, so a
+ * repo-root henxels.yaml governs a bundle below it (spec/80). */
+function contractGoverns(bundle: string): boolean {
+  let candidate = bundle;
+  for (;;) {
+    try {
+      if (statSync(join(candidate, "henxels.yaml")).isFile()) return true;
+    } catch {
+      /* not here */
+    }
+    try {
+      statSync(join(candidate, ".henxels"));
+      return true;
+    } catch {
+      /* not here */
+    }
+    const parent = dirname(candidate);
+    if (parent === candidate) return false;
+    candidate = parent;
+  }
+}
+
 /** (violation instruction, warning) — respecting [validate] henxels = auto|always|never. */
 function runHenxels(state: ServeState, rel: string): [string | null, string | null] {
   const mode = state.config.validate.henxels;
   if (mode === "never") return [null, null];
   const root = state.root;
-  let hasContract = false;
-  try {
-    hasContract = statSync(join(root, "henxels.yaml")).isFile();
-  } catch {
-    hasContract = false;
-  }
-  if (!hasContract) {
-    try {
-      statSync(join(root, ".henxels"));
-      hasContract = true;
-    } catch {
-      hasContract = false;
-    }
-  }
-  if (mode !== "always" && !hasContract) return [null, null];
+  if (mode !== "always" && !contractGoverns(root)) return [null, null];
   const executable = which("henxels");
   if (executable === null) {
     if (mode === "always") {
@@ -523,22 +561,107 @@ function runHenxels(state: ServeState, rel: string): [string | null, string | nu
   return [null, null];
 }
 
-/** Refresh (or insert) the frontmatter timestamp without reformatting anything else. */
-export function bumpTimestamp(text: string, now: string): string {
+/** The server's clock (spec/70 server-owned clocks), read once per write — models do not
+ * know the wall clock, so no written time comes from the writer. Tests pin `now`. */
+export const serverClock = { now: (): Date => new Date() };
+
+/** [raw frontmatter block or null, body] — the block's text, not its parse. */
+function splitBlock(text: string): [string | null, string] {
   if (text.startsWith("---\n")) {
     const end = text.indexOf("\n---\n", 3);
-    if (end !== -1) {
-      let frontmatter = text.slice(4, end);
-      if (TS_LINE.test(frontmatter)) frontmatter = frontmatter.replace(TS_LINE, `timestamp: ${now}`);
-      else frontmatter = frontmatter + `\ntimestamp: ${now}`;
-      return "---\n" + frontmatter + "\n---\n" + text.slice(end + 5);
-    }
+    if (end !== -1) return [text.slice(4, end), text.slice(end + 5)];
   }
-  return `---\ntimestamp: ${now}\n---\n\n` + text;
+  return [null, text];
 }
 
-function utcNowSeconds(): string {
-  return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+/** Refresh (or insert) the frontmatter timestamp without reformatting anything else.
+ * A doc with no frontmatter block is left untouched: OKF reserved files (index.md,
+ * log.md) and journals are frontmatter-free by contract, and adding one here would
+ * turn a write into a file the contract rejects (spec/70). */
+export function bumpTimestamp(text: string, now: string): string {
+  const [block, body] = splitBlock(text);
+  if (block === null) return text;
+  let frontmatter = block;
+  if (TS_LINE.test(frontmatter)) frontmatter = frontmatter.replace(TS_LINE, `timestamp: ${now}`);
+  else frontmatter = frontmatter + `\ntimestamp: ${now}`;
+  return "---\n" + frontmatter + "\n---\n" + body;
+}
+
+export type Meta = Record<string, unknown>;
+
+const META_KEY = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+const TOP_KEY = /^([A-Za-z_][A-Za-z0-9_-]*):(?:\s|$)/;
+const PLAIN = /^[A-Za-z][A-Za-z0-9 ._/()+-]*$/;
+const YAML_WORDS = new Set(["true", "false", "yes", "no", "on", "off", "y", "n", "null"]);
+
+/** spec/70 meta: plain keys; a string, a list of strings, or null per key. */
+function metaProblem(meta: Meta): string | null {
+  for (const [key, value] of Object.entries(meta)) {
+    if (!META_KEY.test(key)) return `meta key '${key}' is not a frontmatter key — use letters, digits, _ and -`;
+    const ok =
+      value === null ||
+      typeof value === "string" ||
+      (Array.isArray(value) && value.every((item) => typeof item === "string"));
+    if (!ok) return `meta '${key}' must be a string, a list of strings, or null (removes the key)`;
+  }
+  return null;
+}
+
+/** Plain when YAML cannot misread it, else a JSON string (valid YAML double-quoted). */
+function yamlScalar(value: string): string {
+  if (PLAIN.test(value) && !value.endsWith(" ") && !YAML_WORDS.has(value.toLowerCase())) return value;
+  return JSON.stringify(value);
+}
+
+/** Keep `block` byte for byte except the top-level keys `meta` names: a named key's span
+ * (its line plus the indented / `- ` lines under it) is rewritten in place or dropped for
+ * null; keys the block lacks are appended in meta's order (spec/70). */
+function mergeMeta(block: string, meta: Meta): string {
+  const spans: Array<[string | null, string[]]> = [];
+  for (const line of block ? block.split("\n") : []) {
+    const head = TOP_KEY.exec(line);
+    if (head || spans.length === 0) spans.push([head ? head[1]! : null, [line]]);
+    else spans[spans.length - 1]![1].push(line);
+  }
+  const lineFor = (key: string, value: unknown): string =>
+    Array.isArray(value)
+      ? `${key}: [${value.map((item) => yamlScalar(item as string)).join(", ")}]`
+      : `${key}: ${yamlScalar(value as string)}`;
+  const out: string[] = [];
+  for (const [key, lines] of spans) {
+    if (key !== null && Object.hasOwn(meta, key)) {
+      if (meta[key] !== null) out.push(lineFor(key, meta[key]));
+    } else {
+      out.push(...lines);
+    }
+  }
+  const present = new Set(spans.map(([key]) => key));
+  for (const [key, value] of Object.entries(meta)) {
+    if (!present.has(key) && value !== null) out.push(lineFor(key, value));
+  }
+  return out.join("\n");
+}
+
+/** spec/70 step 2 for every mode but add_entry: the doc `mode` and `meta` make, before
+ * the timestamp stamp. */
+function compose(previous: string | null, content: string, mode: string, meta: Meta): string {
+  const hasMeta = Object.keys(meta).length > 0;
+  let block: string | null;
+  let body: string;
+  let bare: boolean;
+  if (mode === "append_section" && previous !== null) {
+    const text = previous.replace(/\n+$/, "") + "\n\n" + content;
+    if (!hasMeta) return text;
+    [block, body] = splitBlock(text);
+    bare = block === null;
+  } else {
+    [block, body] = splitBlock(content);
+    bare = block === null;
+    if (bare && mode === "replace" && previous !== null) block = splitBlock(previous)[0];
+    if (block === null && !hasMeta) return content;
+  }
+  const merged = hasMeta ? mergeMeta(block ?? "", meta) : block!;
+  return "---\n" + merged + "\n---\n" + (bare ? "\n" + body.replace(/^\n+/, "") : body);
 }
 
 /** The spec/70 conflict shape — nothing was written. `merged`, when the
@@ -592,24 +715,76 @@ export interface WritePayloadOptions {
   baseSha?: string | null;
   budgetTokens?: number | null;
   refusal?: string | null;
+  meta?: Meta | null;
 }
 
 export type WriteStatus = "ok" | "badpath" | "conflict" | "violation" | "exists";
 
-/** The one guarded write path (spec/70): resolve → atomic write → henxels referee
- * → rollback-or-recompile → live delta, plus base_sha optimistic concurrency.
+/** The one guarded write path (spec/70): resolve → compose and stamp → atomic write →
+ * henxels referee → rollback-or-recompile → live delta, plus base_sha optimistic concurrency.
  * Returns [status, payload]:
  *
  *   "ok"        → {path, seq, sha, warning?}  (sha = new content sha256)
  *   "badpath"   → {instruction}               (traversal / non-kebab / reserved)
  *   "conflict"  → the spec/70 conflict dict (ok/conflict/current_sha/theirs/…)
- *   "violation" → {instruction}               (henxels rejected it; rolled back)
+ *   "violation" → {instruction}               (henxels or meta rejected it; rolled back)
  *   "exists"    → {instruction}               (create mode, target present)
  *
  * Both brain_write (MCP, via writePayload) and PUT /api/docs (REST) call this —
  * one source of truth, mapped onto each surface's shape. On a stale base_sha the
  * conflict carries a `merged` proposal (three-way / LLM) when the ladder resolves
  * one — the same shape the Python engine returns. */
+const DAY_STEM = /^\d{4}-\d{2}-\d{2}$/;
+
+const ENTRY_HEAD = /^\* (?:\*\*\d{2}:\d{2}\*\* *)?/;
+
+/** mode add_entry (spec/70): stamp ONE entry with the server's `**HH:MM**` head and place
+ * it into a newest-first day file — after every entry with a later time, before the first
+ * with the same or an earlier one — without the caller echoing the day back. A missing day
+ * file is created with its `# date` / `## date` head from the file stem. Returns
+ * [instruction, text]: an instruction means nothing may be written. */
+export function insertEntry(
+  previous: string | null,
+  entry: string,
+  stem: string,
+  hhmm: string,
+): [string | null, string] {
+  if (!entry.startsWith("* ")) {
+    return [
+      "add_entry takes exactly one journal entry — content must be one list item, " +
+        "'* `project` · type — text' (continuation lines indented two spaces); " +
+        "the server stamps its **HH:MM** head",
+      "",
+    ];
+  }
+  entry = entry.replace(ENTRY_HEAD, `* **${hhmm}** `).replace(/\n+$/, "");
+  const head = ENTRY.exec(entry)!; // the head was just written
+  if (previous === null) {
+    if (!DAY_STEM.test(stem)) {
+      return [`add_entry creates only day files named YYYY-MM-DD, not '${stem}' — use mode 'create' for a page`, ""];
+    }
+    return [null, `# ${stem}\n\n## ${stem}\n\n${entry}\n`];
+  }
+  const lines = previous.split("\n");
+  const starts: number[] = [];
+  lines.forEach((line, i) => {
+    if (ENTRY.test(line)) starts.push(i);
+  });
+  if (starts.length === 0) return [null, previous.replace(/\n+$/, "") + "\n\n" + entry + "\n"];
+  const header = lines.slice(0, starts[0]).join("\n").replace(/\n+$/, "");
+  const blocks = starts.map((a, k) => lines.slice(a, k + 1 < starts.length ? starts[k + 1] : lines.length).join("\n").replace(/\n+$/, ""));
+  const times = starts.map((i) => ENTRY.exec(lines[i])![1]);
+  let at = times.findIndex((t) => t <= head[1]);
+  if (at < 0) at = blocks.length;
+  blocks.splice(at, 0, entry);
+  return [null, header + "\n\n" + blocks.join("\n\n") + "\n"];
+}
+
+// Serialization (spec/70 "writes stay serialized server-side"): from reading `previous`
+// to atomicWrite there is no await on the success path, so the event loop runs one
+// read-place-write at a time; the awaits (conflict payload, recompile) come after the
+// file is already on disk. Keep it that way — an await inside the section reopens the
+// lost-update race the concurrency test guards.
 export async function guardedWrite(
   state: ServeState,
   doc: string,
@@ -617,14 +792,18 @@ export async function guardedWrite(
   mode: unknown = "create",
   baseSha: string | null = null,
   budgetTokens: number | null = null,
+  meta: Meta | null = null,
 ): Promise<[WriteStatus, Record<string, unknown>]> {
   let writeMode = String(mode ?? "create");
-  if (!["create", "replace", "append_section"].includes(writeMode)) {
+  if (!["create", "replace", "append_section", "add_entry"].includes(writeMode)) {
     writeMode = "create"; // forgiving enums (spec/70)
   }
 
   const [rel, problem] = resolveWritePath(state, doc);
   if (problem !== null) return ["badpath", { instruction: problem }];
+  const metaIssue = metaProblem(meta ?? {});
+  if (metaIssue !== null) return ["violation", { instruction: metaIssue }];
+  const fields: Meta = Object.fromEntries(Object.entries(meta ?? {}).filter(([key]) => key !== "timestamp")); // server-owned
   const target = join(state.root, rel!);
   let previous: Buffer | null = null;
   try {
@@ -657,10 +836,22 @@ export async function guardedWrite(
     return ["exists", { instruction: `'${rel}' already exists — use mode 'replace' or 'append_section'` }];
   }
 
-  if (writeMode === "append_section" && previous !== null) {
-    text = previous.toString("utf8").replace(/\n+$/, "") + "\n\n" + text;
+  const now = serverClock.now();
+  const previousText = previous === null ? null : previous.toString("utf8");
+  if (writeMode === "add_entry") {
+    if (Object.keys(fields).length > 0) {
+      return ["violation", { instruction: "add_entry takes no meta — journal day files are frontmatter-free" }];
+    }
+    const stem = basename(rel!).replace(/\.md$/, "");
+    const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    const [problem, placed] = insertEntry(previousText, text, stem, hhmm);
+    if (problem !== null) return ["violation", { instruction: problem }];
+    text = placed;
+  } else {
+    text = compose(previousText, text, writeMode, fields);
   }
-  atomicWrite(target, Buffer.from(text, "utf8"));
+  const stampedBytes = Buffer.from(bumpTimestamp(text, now.toISOString().replace(/\.\d{3}Z$/, "Z")), "utf8");
+  atomicWrite(target, stampedBytes);
 
   const [violation, warning] = runHenxels(state, rel!);
   if (violation !== null) {
@@ -676,11 +867,6 @@ export async function guardedWrite(
     return ["violation", { instruction: violation }];
   }
 
-  const now = utcNowSeconds();
-  const stamped = bumpTimestamp(readFileSync(target, "utf8"), now);
-  const stampedBytes = Buffer.from(stamped, "utf8");
-  atomicWrite(target, stampedBytes);
-
   const result = await recompileAndBroadcast(state);
   const payload: Record<string, unknown> = { path: rel, seq: result.seq, sha: sha256Hex(stampedBytes) };
   if (warning !== null) payload["warning"] = warning;
@@ -694,9 +880,9 @@ async function singleWrite(
   mode: unknown = "create",
   options: WritePayloadOptions = {},
 ): Promise<Record<string, unknown>> {
-  const { baseSha = null, budgetTokens = null, refusal = null } = options;
+  const { baseSha = null, budgetTokens = null, refusal = null, meta = null } = options;
   if (refusal) return { ok: false, instruction: refusal };
-  const [status, payload] = await guardedWrite(state, doc, content, mode, baseSha, budgetTokens);
+  const [status, payload] = await guardedWrite(state, doc, content, mode, baseSha, budgetTokens, meta);
   if (status === "ok") {
     const out: Record<string, unknown> = {
       ok: true,
@@ -825,32 +1011,42 @@ async function federatedOverview(set: BrainSet, budgetTokens?: number | null, sc
   return { brains: brainsListing(set), ...single, bundle: focus.alias, top_ghosts: ghosts, hint };
 }
 
+/** `query` is the legacy single string (both engines see it); the agent-facing shape
+ * is `terms` (identifiers → keyword) + `situation` (sentences → semantic), spec/50. */
 export function searchPayload(
   state: ServeState,
-  query: string,
+  query: string | null,
   mode?: unknown,
   limit?: unknown,
   budgetTokens?: number | null,
   scope?: string | null,
+  terms?: string[] | null,
+  situation?: string | null,
 ): Promise<Payload>;
 export function searchPayload(
   set: BrainSet,
-  query: string,
+  query: string | null,
   mode?: unknown,
   limit?: unknown,
   budgetTokens?: number | null,
   scope?: string | null,
+  terms?: string[] | null,
+  situation?: string | null,
 ): Promise<Payload>;
 export async function searchPayload(
   target: ServeState | BrainSet,
-  query: string,
+  query: string | null,
   mode: unknown = "auto",
   limit: unknown = 8,
   budgetTokens?: number | null,
   scope?: string | null,
+  terms: string[] | null = null,
+  situation: string | null = null,
 ): Promise<Payload> {
-  if (!(target instanceof BrainSet)) return singleSearch(target, query, mode, limit, budgetTokens);
-  if (!target.federated) return singleSearch(await target.stateFor(target.brains[0]!), query, mode, limit, budgetTokens);
+  if (!(target instanceof BrainSet)) return singleSearch(target, query, mode, limit, budgetTokens, terms, situation);
+  if (!target.federated) {
+    return singleSearch(await target.stateFor(target.brains[0]!), query, mode, limit, budgetTokens, terms, situation);
+  }
 
   const budget = budgetTokens || 1200;
   let bounded: number;
@@ -868,7 +1064,7 @@ export async function searchPayload(
   const contributing: string[] = [];
   for (let order = 0; order < chosen.length; order++) {
     const brain = chosen[order]!;
-    const body = await singleSearch(await target.stateFor(brain), query, mode, bounded, 1e9);
+    const body = await singleSearch(await target.stateFor(brain), query, mode, bounded, 1e9, terms, situation);
     const hint = String(body["hint"]);
     if (hint.startsWith("unknown mode")) modeNote = hint.split(". ", 1)[0] + ". ";
     for (const m of body["used_modes"] as string[]) if (!used.includes(m)) used.push(m);
@@ -885,6 +1081,7 @@ export async function searchPayload(
           description: hit["description"],
           score: hit["score"],
           why: hit["why"],
+          snippet: hit["snippet"] ?? null,
         },
       });
     });
@@ -1148,7 +1345,20 @@ function textResult(payload: Record<string, unknown>) {
 
 /** One McpServer over a shared ServeState. Stdio holds a single instance;
  * the streamable-HTTP mount calls this factory per request (stateless). */
-export function createMcpServer(state: ServeState | BrainSet, writeRefusal: string | null = null): McpServer {
+/** The name a query-log line carries: the aliases of a BrainSet, else the bundle root. */
+export function brainName(state: ServeState | BrainSet): string {
+  if (state instanceof BrainSet) return state.brains.map((b) => b.alias).join(",");
+  return state.root || "brain";
+}
+
+/** `sessionId` names this server's query log (spec/70): one process, one file — under
+ * stdio that is one agent session. */
+export function createMcpServer(
+  state: ServeState | BrainSet,
+  writeRefusal: string | null = null,
+  sessionId: string | null = null,
+): McpServer {
+  const session = sessionId ?? newSessionId();
   const server = new McpServer({ name: "brainpick", version: VERSION }, { instructions: instructionsFor(state) });
 
   const budgetTokens = z.number().int().optional();
@@ -1174,20 +1384,48 @@ export function createMcpServer(state: ServeState | BrainSet, writeRefusal: stri
     "brain_search",
     {
       description:
-        "Find docs by keyword. Returns paths, titles, and descriptions — never full " +
-        "bodies. Follow up with brain_read on the best hit's path. With several brains " +
-        "behind this server every brain is searched and hits are merged (paths become " +
-        "alias:path); scope = all (default) | here | me | a comma-separated alias list.",
+        "Search the brain with two inputs, one per engine. `situation`: the episode in one " +
+        "or two full sentences — what you are doing, what happened, what you expected, which " +
+        "project — for the semantic engine (embeddings match meaning, not tokens; a keyword " +
+        "list here finds nothing). `terms`: identifiers verbatim — ticket ids, error strings " +
+        "as printed, function/env/flag/file names, proper nouns — for the keyword engine " +
+        "(BM25 matches tokens; sentences here match only function words). Pass [] when " +
+        "nothing has a name yet; the situation is always required. Both rankings are fused " +
+        "(RRF) and deduped, so a hit either engine found is in the answer. mode narrows to " +
+        "one engine (keyword | semantic | graph); auto (default) is the fusion. Returns " +
+        "paths, titles, descriptions and the matched snippet — never full bodies; follow up " +
+        "with brain_read on every plausibly relevant hit (a journal hit is titled by its " +
+        "date: judge it by the snippet). With several brains behind this server every brain " +
+        "is searched and hits are merged (paths become alias:path); scope = all (default) | " +
+        "here | me | a comma-separated alias list.",
       inputSchema: {
-        query: z.string(),
+        situation: z.string(),
+        terms: z.array(z.string()),
         mode: z.string().optional(),
         limit: z.number().int().optional(),
         scope,
         budget_tokens: budgetTokens,
       },
     },
-    async ({ query, mode, limit, scope: s, budget_tokens }) =>
-      textResult(await searchPayload(target, query, mode ?? "auto", limit ?? 8, budget_tokens ?? null, s ?? null)),
+    async ({ situation, terms, mode, limit, scope: s, budget_tokens }) => {
+      const result = await searchPayload(
+        target,
+        null,
+        mode ?? "auto",
+        limit ?? 10,
+        budget_tokens ?? null,
+        s ?? null,
+        [...(terms ?? [])],
+        String(situation ?? ""),
+      );
+      logQuery(
+        session,
+        brainName(state),
+        { situation, terms: [...(terms ?? [])], mode: mode ?? "auto", limit: limit ?? 10, scope: s ?? null },
+        result,
+      );
+      return textResult(result);
+    },
   );
 
   server.registerTool(
@@ -1196,7 +1434,8 @@ export function createMcpServer(state: ServeState | BrainSet, writeRefusal: stri
       description:
         "Read one doc: frontmatter, outline, content, and linked neighbors. doc can be " +
         "a path (kuu.md), a bare stem (kuu), or an approximate title. Pass sections=[...] " +
-        "with names from the outline to read only those parts.",
+        "with names from the outline to read only those parts — a heading, or for a " +
+        "journal day the entry's time (\"05:30\") to read that one entry.",
       inputSchema: {
         doc: z.string(),
         sections: z.array(z.string()).optional(),
@@ -1229,7 +1468,13 @@ export function createMcpServer(state: ServeState | BrainSet, writeRefusal: stri
     {
       description:
         "Write a markdown doc into the bundle, guarded by its henxels contract. mode is " +
-        "create (default, never overwrites), replace, or append_section. Pass base_sha " +
+        "create (default, never overwrites), replace, append_section, or add_entry — content is ONE " +
+        "journal entry ('* `project` · type — text') and the server stamps its **HH:MM** head and slots " +
+        "it into the newest-first day file (creating the day when missing), so a day is never echoed " +
+        "back to add a line. meta is the frontmatter as data ({\"type\", \"title\", \"description\", " +
+        "\"tags\": [...]}; null removes a key): send content as the body only and the server writes the " +
+        "YAML; a body-only replace keeps the page's frontmatter and merges meta into it. Never send a " +
+        "timestamp or invent a time — the server stamps both. Pass base_sha " +
         "(the sha256 of the content you last read) to catch concurrent edits: on a " +
         "mismatch nothing is written and the result returns the current content, its " +
         "current_sha to retry with, and — when resolvable — a merged proposal. On a " +
@@ -1238,16 +1483,18 @@ export function createMcpServer(state: ServeState | BrainSet, writeRefusal: stri
         doc: z.string(),
         content: z.string(),
         mode: z.string().optional(),
+        meta: z.record(z.unknown()).optional(),
         base_sha: z.string().optional(),
         budget_tokens: budgetTokens,
       },
     },
-    async ({ doc, content, mode, base_sha, budget_tokens }) =>
+    async ({ doc, content, mode, meta, base_sha, budget_tokens }) =>
       textResult(
         await writePayload(target, doc, content, mode ?? "create", {
           baseSha: base_sha ?? null,
           budgetTokens: budget_tokens ?? null,
           refusal: writeRefusal,
+          meta: meta ?? null,
         }),
       ),
   );

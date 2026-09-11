@@ -61,6 +61,7 @@ interface Hit {
   title: string;
   description: string | null;
   why?: string;
+  snippet?: string | null;
 }
 
 export function presentSearch(p: Record<string, unknown>, query: string): string {
@@ -74,6 +75,7 @@ export function presentSearch(p: Record<string, unknown>, query: string): string
     const desc = hit.description ? ` — ${hit.description}` : "";
     const why = hit.why ? `  (${hit.why})` : "";
     lines.push(`  ${hit.path}  ${hit.title}${desc}${why}`);
+    if (hit.snippet) lines.push(`      ↳ ${hit.snippet}`);
   }
   if (hits.length === 0) lines.push("  (no hits — try `overview` for the whole brain)");
   return lines.join("\n");

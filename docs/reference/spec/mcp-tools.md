@@ -4,7 +4,7 @@ about: concept
 title: "Spec: MCP tools"
 description: "The normative contract for the six tools — small-model ergonomics, budget_tokens, the guarded brain_write flow with optimistic concurrency, and resources."
 tags: [spec]
-timestamp: 2026-07-10T18:30:00Z
+timestamp: 2026-09-11T06:36:05Z
 ---
 
 # Spec: MCP tools
@@ -17,9 +17,12 @@ tool accepts `budget_tokens` (chars/4 estimate; descriptions survive, bodies
 trim, truncation is announced).
 
 It specifies each tool's arguments and returns, and the guarded `brain_write`
-flow — resolve, atomic write, henxels referee, rollback-or-recompile-and-delta
-— plus optimistic concurrency by `base_sha` with a merge ladder (three-way,
-then an LLM merge, else a manual conflict). Two optional resources,
+flow — resolve, compose and stamp, atomic write, henxels referee,
+rollback-or-recompile-and-delta — with server-owned clocks (the `timestamp`
+and the `add_entry` `**HH:MM**` head never come from the writer), the
+frontmatter as `meta` data serialized by the server, plus optimistic
+concurrency by `base_sha` with a merge ladder (three-way, then an LLM merge,
+else a manual conflict). Two optional resources,
 `brain://index` and `brain://doc/{path}`, complement the tools.
 
 Each tool has its own page under the [MCP tool reference](../../reference-mcp.md);

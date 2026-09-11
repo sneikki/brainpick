@@ -243,3 +243,54 @@ def test_auto_never_drops_a_title_match():
     body = run_search(RECORDS, FRESH, "aurinko", mode="auto", limit=1,
                       semantic_fn=semantic_stub(["kuu.md", "maa.md"]))
     assert "aurinko.md" in {h["path"] for h in body["hits"]}
+
+
+# -- two-input search (spec/50): terms → keyword, situation → semantic ---------------
+
+def recording_semantic(paths):
+    seen = []
+
+    def run(query, limit):
+        seen.append(query)
+        return [hit(p, score=0.9, source="semantic") for p in paths][:limit]
+    run.seen = seen
+    return run
+
+
+def test_situation_alone_feeds_semantic_and_terms_join_the_keyword_query():
+    sem = recording_semantic(["maa.md"])
+    body = run_search(RECORDS, FRESH, mode="auto", limit=8, semantic_fn=sem,
+                      terms=["aurinko"], situation="the star at the centre of everything")
+    assert sem.seen == ["the star at the centre of everything"]  # never the identifiers
+    assert body["used_modes"] == ["keyword", "semantic"]
+    assert {h["path"] for h in body["hits"]} >= {"aurinko.md", "maa.md"}
+    assert body["degraded_from"] is None
+
+
+def test_empty_terms_keeps_both_engines_on_the_situation():
+    sem = recording_semantic(["maa.md"])
+    body = run_search(RECORDS, FRESH, mode="auto", semantic_fn=sem, terms=[], situation="kuu kiertää")
+    assert sem.seen == ["kuu kiertää"]
+    assert body["used_modes"] == ["keyword", "semantic"]
+    assert {h["path"] for h in body["hits"]} == {"kuu.md", "maa.md"}  # keyword found kuu, vectors maa
+
+
+def test_terms_without_a_situation_is_a_keyword_search():
+    sem = recording_semantic(["maa.md"])
+    body = run_search(RECORDS, FRESH, mode="auto", semantic_fn=sem, terms=["kuu"], situation="")
+    assert body["used_modes"] == ["keyword"]
+    assert [h["path"] for h in body["hits"]] == ["kuu.md"]
+    assert body["degraded_from"] is None  # nothing asked of the vectors, nothing degraded
+    assert sem.seen == []
+
+
+def test_keyword_mode_falls_back_to_the_situation_without_terms():
+    body = run_search(RECORDS, FRESH, mode="keyword", terms=[], situation="kuu kiertää")
+    assert [h["path"] for h in body["hits"]] == ["kuu.md"]
+
+
+def test_legacy_query_still_feeds_both_engines():
+    sem = recording_semantic(["maa.md"])
+    body = run_search(RECORDS, FRESH, "aurinko", mode="auto", semantic_fn=sem)
+    assert sem.seen == ["aurinko"]
+    assert body["used_modes"] == ["keyword", "semantic"]

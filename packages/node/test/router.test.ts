@@ -252,3 +252,53 @@ test("auto never drops a title match", async () => {
   const body = await runSearch(RECORDS, FRESH, "aurinko", "auto", 1, semanticStub(["kuu.md", "maa.md"]));
   expect(body.hits.map((h) => h.path)).toContain("aurinko.md");
 });
+
+// -- two-input search (spec/50): terms → keyword, situation → semantic ---------------
+
+function recordingSemantic(paths: string[]) {
+  const seen: string[] = [];
+  const run = (query: string, limit: number) => {
+    seen.push(query);
+    return paths.map((p) => hit(p, 0.9, null, "semantic")).slice(0, limit);
+  };
+  return { run, seen };
+}
+
+test("situation alone feeds semantic and terms join the keyword query", async () => {
+  const sem = recordingSemantic(["maa.md"]);
+  const body = await runSearch(RECORDS, FRESH, null, "auto", 8, sem.run, null, null, ["aurinko"], "the star at the centre of everything");
+  expect(sem.seen).toEqual(["the star at the centre of everything"]); // never the identifiers
+  expect(body.used_modes).toEqual(["keyword", "semantic"]);
+  const paths = new Set(body.hits.map((h) => h.path));
+  expect(paths.has("aurinko.md") && paths.has("maa.md")).toBe(true);
+  expect(body.degraded_from).toBeNull();
+});
+
+test("empty terms keeps both engines on the situation", async () => {
+  const sem = recordingSemantic(["maa.md"]);
+  const body = await runSearch(RECORDS, FRESH, null, "auto", 8, sem.run, null, null, [], "kuu kiertää");
+  expect(sem.seen).toEqual(["kuu kiertää"]);
+  expect(body.used_modes).toEqual(["keyword", "semantic"]);
+  expect(new Set(body.hits.map((h) => h.path))).toEqual(new Set(["kuu.md", "maa.md"])); // keyword found kuu, vectors maa
+});
+
+test("terms without a situation is a keyword search", async () => {
+  const sem = recordingSemantic(["maa.md"]);
+  const body = await runSearch(RECORDS, FRESH, null, "auto", 8, sem.run, null, null, ["kuu"], "");
+  expect(body.used_modes).toEqual(["keyword"]);
+  expect(body.hits.map((h) => h.path)).toEqual(["kuu.md"]);
+  expect(body.degraded_from).toBeNull(); // nothing asked of the vectors, nothing degraded
+  expect(sem.seen).toEqual([]);
+});
+
+test("keyword mode falls back to the situation without terms", async () => {
+  const body = await runSearch(RECORDS, FRESH, null, "keyword", 8, null, null, null, [], "kuu kiertää");
+  expect(body.hits.map((h) => h.path)).toEqual(["kuu.md"]);
+});
+
+test("legacy query still feeds both engines", async () => {
+  const sem = recordingSemantic(["maa.md"]);
+  const body = await runSearch(RECORDS, FRESH, "aurinko", "auto", 8, sem.run);
+  expect(sem.seen).toEqual(["aurinko"]);
+  expect(body.used_modes).toEqual(["keyword", "semantic"]);
+});
