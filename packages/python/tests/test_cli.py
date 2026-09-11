@@ -11,7 +11,7 @@ from brainpick.cli import main
     ["serve", "--help"], ["mcp", "--help"], ["compile", "--help"],
     ["init", "--help"], ["doctor", "--help"],
     ["search", "--help"], ["read", "--help"], ["neighbors", "--help"],
-    ["overview", "--help"], ["show", "--help"], ["integrate", "--help"],
+    ["overview", "--help"], ["show", "--help"], ["integrate", "--help"], ["recall", "--help"],
     ["token", "--help"], ["token", "create", "--help"], ["token", "list", "--help"],
     ["token", "revoke", "--help"], ["password", "--help"], ["password", "set", "--help"],
     ["password", "clear", "--help"],

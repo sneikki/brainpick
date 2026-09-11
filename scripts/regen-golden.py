@@ -129,6 +129,36 @@ def regen_delta(case: dict) -> None:
         print(f"golden: {out.relative_to(REPO)}")
 
 
+def regen_recall(case: dict) -> None:
+    """spec/72: the hook's stdout for the case payload, through the real CLI."""
+    import contextlib
+    import io
+    import os
+
+    from brainpick.cli import main as cli_main
+
+    if case.get("expect_empty"):
+        return
+    bundle = case["bundle"]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / bundle
+        shutil.copytree(BUNDLES / bundle, root)
+        run_compile(root)
+        os.environ["BRAINPICK_RECALL_STATE_DIR"] = str(Path(tmp) / "state")
+        os.environ["BRAINPICK_QUERY_LOG"] = "0"
+        stdin, sys.stdin = sys.stdin, io.StringIO(json.dumps(case["payload"]))
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                cli_main(["recall", "--root", str(root)])
+        finally:
+            sys.stdin = stdin
+        dst = EXPECTED / bundle / case["golden"]
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text(out.getvalue(), encoding="utf-8")
+        print(f"golden: {dst.relative_to(REPO)}")
+
+
 def main() -> None:
     for case in CASES:
         if case["class"] == "compile":
@@ -146,6 +176,8 @@ def main() -> None:
             regen_similarity_gaps(case)
         elif case["class"] == "delta":
             regen_delta(case)
+        elif case["class"] == "recall":
+            regen_recall(case)
     print("done — review the diffs like code before committing.")
 
 

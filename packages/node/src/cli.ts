@@ -309,6 +309,18 @@ program
   );
 
 program
+  .command("recall")
+  .description("prompt hook: hook payload on stdin, matching memories as hook context (spec/72)")
+  .option("--root <path>", "bundle root (default: current directory)", ".")
+  .option("--limit <n>", "max hits searched (default: 10)", intOption, 10)
+  .action(async (opts: { root: string; limit: number }) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+    const { recallMirror } = await import("./recall");
+    emit(await recallMirror(opts.root, Buffer.concat(chunks).toString("utf8"), opts.limit));
+  });
+
+program
   .command("read <doc>")
   .description("read one doc from the brain (path, stem, or approximate title)")
   .option("--root <path>", "bundle root (default: current directory)", ".")

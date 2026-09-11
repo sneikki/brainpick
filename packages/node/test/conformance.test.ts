@@ -17,6 +17,7 @@ import { buildDocsRecords, renderReportBlock, type DocRecord, type Graph } from 
 import { buildChunks } from "../src/compile/t2";
 import { Brain, BrainSet } from "../src/federation";
 import { searchPayload } from "../src/mcp";
+import { recallMirror } from "../src/recall";
 import { graphSearch, loadKg } from "../src/kg";
 import { search, type SearchHit } from "../src/query/keyword";
 import { runSearch } from "../src/query/router";
@@ -48,6 +49,9 @@ interface ConformanceCase {
   embed?: string[];
   expect_order?: boolean;
   scope?: string;
+  payload?: Record<string, unknown>;
+  golden?: string;
+  expect_empty?: boolean;
 }
 
 const CASES = (
@@ -143,6 +147,17 @@ describe("conformance", () => {
           );
           const expected = readFileSync(join(EXPECTED, c.bundle, c.artifact!), "utf8");
           expect(actual, `${c.artifact} drifted from golden`).toBe(expected);
+        });
+        break;
+
+      case "recall":
+        test(c.id, async () => {
+          // spec/72: the hook's stdout, byte for byte — T1 only, so `auto` is keyword and exact
+          const root = copyBundle(c.bundle);
+          await runCompile(root);
+          const { out } = await recallMirror(root, JSON.stringify(c.payload), 10, {});
+          if (c.expect_empty) expect(out).toBeUndefined();
+          else expect(out + "\n").toBe(readFileSync(join(EXPECTED, c.bundle, c.golden!), "utf8"));
         });
         break;
 

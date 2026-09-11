@@ -4,7 +4,7 @@ about: concept
 title: Agent integrations
 description: How brainpick meets agents where they live — a shipped Agent Skill, one-command integrations for each harness, four CLI query mirrors, and an AGENTS.md brain report that teaches graph-before-grep.
 tags: [agents]
-timestamp: 2026-09-06T11:30:00Z
+timestamp: 2026-09-11T08:00:32Z
 ---
 
 # Agent integrations
@@ -38,7 +38,9 @@ the source of truth.
 editing settings for you:
 
 - **`claude-code`** writes the skill to `.claude/skills/brainpick/SKILL.md`, then
-  prints a paste-able graph-before-grep `PreToolUse` hook and the `claude mcp add`
+  prints a paste-able hooks fragment — the graph-before-grep `PreToolUse` hook and a
+  `UserPromptSubmit` hook running [brainpick recall](reference/cli/recall.md), which
+  puts the memories matching each prompt into context — and the `claude mcp add`
   snippet.
 - **`opencode`** writes the skill under `.opencode/skills/` and prints the
   `opencode.json` MCP server snippet.

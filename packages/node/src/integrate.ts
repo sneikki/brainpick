@@ -19,7 +19,7 @@ import { dirname, join, resolve } from "node:path";
 import { runCompile } from "./compile/pipeline";
 import { REPORT_BEGIN_PREFIX, REPORT_END_MARKER } from "./compile/t1";
 import { findRepoRoot } from "./detect";
-import { mcpSnippets, Voice, type Print } from "./scaffold";
+import { brainpickCommand, mcpSnippets, Voice, type Print } from "./scaffold";
 import { PACKAGE_ROOT } from "./version";
 
 export const TARGETS = ["claude-code", "opencode", "agents-md"] as const;
@@ -55,9 +55,17 @@ export function skillText(): string {
   return readFileSync(skillPath(), "utf8");
 }
 
-/** A paste-able Claude Code PreToolUse fragment that nudges the agent toward the
- * brain before it greps — advisory (exit 0), never a block. */
-function graphBeforeGrepHook(): string {
+/** Python's shlex.quote: bare when every character is safe, else single-quoted. */
+function shellQuote(word: string): string {
+  if (word === "") return "''";
+  return /[^\w@%+=:,./-]/.test(word) ? `'${word.replaceAll("'", "'\"'\"'")}'` : word;
+}
+
+/** A paste-able Claude Code hooks fragment: a PreToolUse nudge toward the brain before
+ * it greps — advisory (exit 0), never a block — and the UserPromptSubmit recall that puts
+ * the matching memories into context (spec/72). */
+function hooksFragment(root: string): string {
+  const recall = [...brainpickCommand(), "recall", "--root", root].map(shellQuote).join(" ");
   const fragment = {
     hooks: {
       PreToolUse: [
@@ -73,6 +81,7 @@ function graphBeforeGrepHook(): string {
           ],
         },
       ],
+      UserPromptSubmit: [{ hooks: [{ type: "command", command: recall, timeout: 15 }] }],
     },
   };
   return JSON.stringify(fragment, null, 2);
@@ -104,13 +113,13 @@ function integrateClaudeCode(voice: Voice, root: string, repo: string, dryRun: b
   const verb = dryRun ? "would write" : existed ? "updated" : "wrote";
   voice.line("✓", `skill: ${verb} ${dest}`);
   if (dryRun) {
-    voice.step("• print the graph-before-grep PreToolUse hook and the `claude mcp add` snippet");
+    voice.step("• print the graph-before-grep and recall hooks and the `claude mcp add` snippet");
     return 0;
   }
   voice.raw();
   voice.raw("Paste into .claude/settings.json (settings are never edited for you):");
   voice.raw();
-  voice.raw(graphBeforeGrepHook());
+  voice.raw(hooksFragment(root));
   voice.raw();
   voice.raw(mcpSnippets(root));
   return 0;

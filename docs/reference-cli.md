@@ -4,7 +4,7 @@ about: concept
 title: "CLI reference"
 description: "Every brainpick subcommand and its flags, derived from the argparse CLI — compile and serve, the read mirrors, writes, presentations, onboarding and auth."
 tags: [cli, spec]
-timestamp: 2026-09-06T11:30:00Z
+timestamp: 2026-09-11T08:00:32Z
 ---
 
 # CLI reference
@@ -33,6 +33,7 @@ the read tools in the terminal, present live, onboard, and manage auth.
 
 - [brainpick init](reference/cli/init.md) — detect the bundle and backends, write config, compile T1.
 - [brainpick integrate](reference/cli/integrate.md) — install brainpick into an agent harness.
+- [brainpick recall](reference/cli/recall.md) — the prompt hook: matching memories into the agent's context, once per session.
 - [brainpick doctor](reference/cli/doctor.md) — diagnose config, bundle, artifacts, backends and UI.
 
 ## Authentication

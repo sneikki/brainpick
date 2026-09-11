@@ -1,5 +1,7 @@
 """`brainpick integrate` (skill, MCP snippets, the AGENTS.md report) and the
 compile-side report fill. The shipped skill must match the repo-root canonical."""
+import json
+import shlex
 import shutil
 
 import pytest
@@ -7,6 +9,7 @@ import pytest
 from brainpick.compile.pipeline import run_compile
 from brainpick.compile.t1 import REPORT_BEGIN_PREFIX, REPORT_END_MARKER
 from brainpick.integrate import SKILL_DESTINATIONS, run_integrate, skill_path, skill_text
+from brainpick.scaffold import brainpick_command
 
 from conftest import FIXTURE_BUNDLES, REPO_ROOT
 
@@ -43,6 +46,11 @@ def test_integrate_claude_code_writes_skill_and_prints_snippets(repo, capsys):
     out = capsys.readouterr().out
     assert "PreToolUse" in out and "Grep|Glob" in out  # graph-before-grep hook
     assert "claude mcp add brainpick" in out            # reused snippet builder
+    hooks = json.loads(out[out.index('{\n  "hooks"'):out.index("\n}\n") + 2])
+    assert hooks["hooks"]["UserPromptSubmit"] == [{"hooks": [{
+        "type": "command", "command": shlex.join(brainpick_command() + ["recall", "--root", str(bundle.resolve())]),
+        "timeout": 15,
+    }]}]                                                  # spec/72 wiring, in the same fragment
 
 
 def test_integrate_opencode_writes_skill_under_its_convention(repo, capsys):
