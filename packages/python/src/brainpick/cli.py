@@ -197,6 +197,33 @@ def _cmd_search(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_recall(args: argparse.Namespace) -> int:
+    """spec/72: a prompt hook. stdout carries the context or nothing, the reason for
+    nothing goes to stderr, and the exit status is 0 — a hook never breaks a prompt."""
+    try:
+        import json
+
+        from brainpick.config import resolve_bundle
+        from brainpick.recall import gated, parse_payload, recall_line
+
+        parsed = parse_payload(json.loads(sys.stdin.read()))
+        if parsed is None or gated(parsed[0]):
+            return 0
+        root, config = resolve_bundle(args.root)
+        state, instruction = _held_state(root, config)
+        if state is None:
+            print(instruction, file=sys.stderr)
+            return 0
+        _note_if_stale(root, config)
+        line = recall_line(state, Path(args.root).resolve().name, *parsed, limit=args.limit)
+    except Exception as exc:  # noqa: BLE001 — any failure is a silent hook, never a broken prompt
+        print(f"brainpick recall: {exc}", file=sys.stderr)
+        return 0
+    if line is not None:
+        print(line)
+    return 0
+
+
 def _cmd_read(args: argparse.Namespace) -> int:
     state, code = _query_setup(args)
     if state is None:
@@ -462,6 +489,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     # The four query mirrors — the same router/state the MCP tools and REST use,
     # in plain terminal form (add --json for the raw MCP payload).
+    p_recall = sub.add_parser("recall", help="prompt hook: hook payload on stdin, matching memories as hook context (spec/72)")
+    p_recall.add_argument("--root", default=".", help="bundle root (default: current directory)")
+    p_recall.add_argument("--limit", type=int, default=10, help="max hits searched (default: 10)")
+    p_recall.set_defaults(func=_cmd_recall)
+
     p_search = sub.add_parser("search", help="search the compiled brain (the brain_search tool, in the terminal)")
     p_search.add_argument("query", nargs="?", default=None,
                           help="a single query string, seen by both engines (legacy shape)")

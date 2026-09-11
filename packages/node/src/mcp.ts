@@ -226,7 +226,7 @@ async function singleSearch(
 
 // -- brain_read --------------------------------------------------------------------
 
-function loadDoc(state: ServeState, record: DocRecord): [Record<string, unknown>, string] {
+export function loadDoc(state: ServeState, record: DocRecord): [Record<string, unknown>, string] {
   const path = join(state.root, record.path);
   let isFile = false;
   try {

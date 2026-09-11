@@ -20,12 +20,13 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 from pathlib import Path
 
 from brainpick.compile.pipeline import run_compile
 from brainpick.compile.t1 import REPORT_BEGIN_PREFIX, REPORT_END_MARKER
 from brainpick.detect import find_repo_root
-from brainpick.scaffold import _Voice, dsh_snippet, mcp_snippets
+from brainpick.scaffold import _Voice, brainpick_command, dsh_snippet, mcp_snippets
 
 TARGETS = ("claude-code", "opencode", "agents-md", "dsh")
 HENXELS_BEGIN = "<!-- henxels:begin -->"
@@ -59,9 +60,11 @@ def skill_text() -> str:
     return skill_path().read_text(encoding="utf-8")
 
 
-def _graph_before_grep_hook() -> str:
-    """A paste-able Claude Code PreToolUse fragment that nudges the agent toward
-    the brain before it greps — advisory (exit 0), never a block."""
+def _hooks_fragment(root: Path) -> str:
+    """A paste-able Claude Code hooks fragment: a PreToolUse nudge toward the brain
+    before it greps — advisory (exit 0), never a block — and the UserPromptSubmit
+    recall that puts the matching memories into context (spec/72)."""
+    recall = shlex.join(brainpick_command() + ["recall", "--root", str(root)])
     fragment = {
         "hooks": {
             "PreToolUse": [
@@ -77,7 +80,10 @@ def _graph_before_grep_hook() -> str:
                         }
                     ],
                 }
-            ]
+            ],
+            "UserPromptSubmit": [
+                {"hooks": [{"type": "command", "command": recall, "timeout": 15}]}
+            ],
         }
     }
     return json.dumps(fragment, indent=2)
@@ -108,12 +114,12 @@ def _integrate_claude_code(voice: _Voice, root: Path, repo: Path, dry_run: bool)
     verb = "would write" if dry_run else ("updated" if existed else "wrote")
     voice.line("✓", f"skill: {verb} {dest}")
     if dry_run:
-        voice.step("• print the graph-before-grep PreToolUse hook and the `claude mcp add` snippet")
+        voice.step("• print the graph-before-grep and recall hooks and the `claude mcp add` snippet")
         return 0
     voice.raw()
     voice.raw("Paste into .claude/settings.json (settings are never edited for you):")
     voice.raw()
-    voice.raw(_graph_before_grep_hook())
+    voice.raw(_hooks_fragment(root))
     voice.raw()
     voice.raw(mcp_snippets(root))
     return 0

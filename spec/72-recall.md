@@ -43,7 +43,8 @@ it") carries no situation to recall for.
 
 ## The query
 
-A recall is one two-input search (spec/50) with mode `auto` and limit `N`:
+A recall is one two-input search (spec/50) with mode `auto`, limit `N` and no
+budget trimming (the hits the search ranks are the hits rendered):
 
 - `situation` is the prompt verbatim. Recall does not translate or rewrite
   it and calls no model: a prompt written in another language than the brain
@@ -54,7 +55,8 @@ A recall is one two-input search (spec/50) with mode `auto` and limit `N`:
   over the whole prompt separately (non-overlapping, left to right); the
   union has backticks stripped, items of 2 characters or fewer dropped,
   duplicates removed, is sorted by Unicode code point, and its first 8 are
-  the terms:
+  the terms (the classes are ASCII and `\b` is an ASCII word boundary, so
+  both regex engines agree):
   1. a backtick span: `` `[^`]+` ``
   2. a hyphenated compound: `[A-Za-z0-9]+(-[A-Za-z0-9]+)+`
   3. snake_case: `[A-Za-z]+_[A-Za-z0-9_]+`
@@ -70,10 +72,11 @@ The search is appended to the query log (spec/70) under the session
 A memory already injected in a session is in that session's context, so it
 is not injected again. A hit's key is `<path>#<HH:MM>` when it renders as an
 entry (below) and `<path>` otherwise. The keys a session has seen are kept,
-one per line, in the file `<session_id>` (every character outside
-`[A-Za-z0-9._-]` replaced by `_`) under `$BRAINPICK_RECALL_STATE_DIR`, else
-`$XDG_RUNTIME_DIR/brainpick/recall`, else `brainpick-recall` in the system
-temp directory — runtime state that may vanish at reboot. A hit whose key is
+one per line, in the file `<session_id>` — every character outside
+`[A-Za-z0-9_-]` replaced by `_`, so no id names a path outside the directory
+— under `$BRAINPICK_RECALL_STATE_DIR`, else `$XDG_RUNTIME_DIR/brainpick/recall`,
+else `brainpick-recall` in the system temp directory: runtime state that may
+vanish at reboot. A hit whose key is
 already there is skipped entirely; every rendered key is added. A payload
 without `session_id` reads and writes no state: every hit is eligible.
 
@@ -113,20 +116,23 @@ then, when there are pointers, `Further hits (pointers only):` and one line
 per pointer (`: <snippet>` omitted when there is none). `<name>` is the name
 of the directory `--root` resolves to. When nothing is quoted and nothing is
 a pointer — no hits, or every hit already seen — recall prints nothing.
-Otherwise it prints
+Otherwise it prints one line of compact JSON (no spaces after `,` and `:`,
+non-ASCII unescaped) and a newline:
 
 ```json
-{"hookSpecificOutput": {"hookEventName": "<hook_event_name>", "additionalContext": "<context>"}}
+{"hookSpecificOutput":{"hookEventName":"<hook_event_name>","additionalContext":"<context>"}}
 ```
 
 ## Wiring
 
-`brainpick integrate claude-code` prints the hook registration beside the MCP
-snippet, with the root resolved to an absolute path — for the harness's user
-settings, not the repository:
+`brainpick integrate claude-code` adds a `UserPromptSubmit` entry to the hooks
+fragment it prints (beside its `PreToolUse` graph-before-grep hook) — for the
+harness's settings, which integrate never edits. The command is the launcher
+the MCP snippet uses (`brainpick` as that installation reaches it), then
+`recall --root <absolute root>`, shell-quoted:
 
 ```json
-{"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": "brainpick recall --root <absolute root>", "timeout": 15}]}]}}
+{"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": "<launcher> recall --root <absolute root>", "timeout": 15}]}]}}
 ```
 
 Recall reads one brain. Recalling across the brains of a federation

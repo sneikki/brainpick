@@ -2,6 +2,13 @@
 
 ## 2026-09-11
 
+- Added: `brainpick recall` (spec/72) — the prompt hook. A harness pipes its
+  hook payload in; recall searches the brain with the prompt as the situation
+  and its identifiers as terms, and prints the matching memories as hook
+  context: journal entries quoted whole, pages by description, each once per
+  session. No translation and no model — the agent still writes its own
+  English queries. `integrate claude-code` prints the `UserPromptSubmit`
+  registration; the conformance class `recall` holds both engines to one golden.
 - Changed: `brain_write` owns every clock (spec/70). The frontmatter
   `timestamp` is stamped before the henxels referee runs, so a contract that
   requires it no longer makes the writer invent one, and `add_entry` writes the

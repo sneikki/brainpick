@@ -8,6 +8,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { runCompile } from "../src/compile/pipeline";
 import { REPORT_BEGIN_PREFIX, REPORT_END_MARKER } from "../src/compile/t1";
 import { runIntegrate, SKILL_DESTINATIONS, skillPath, skillText } from "../src/integrate";
+import { brainpickCommand } from "../src/scaffold";
 import { cleanup, FIXTURE_BUNDLES, REPO_ROOT, tempDir } from "./helpers";
 
 afterEach(cleanup);
@@ -45,6 +46,10 @@ describe("integrate claude-code / opencode", () => {
     expect(out).toContain("PreToolUse");
     expect(out).toContain("Grep|Glob");
     expect(out).toContain("claude mcp add brainpick");
+    const hooks = JSON.parse(out.slice(out.indexOf('{\n  "hooks"'), out.indexOf("\n}") + 2));
+    expect(hooks.hooks.UserPromptSubmit).toEqual([
+      { hooks: [{ type: "command", command: [...brainpickCommand(), "recall", "--root", bundle].join(" "), timeout: 15 }] },
+    ]); // spec/72 wiring, in the same fragment
   });
 
   test("opencode writes the skill under its convention", async () => {

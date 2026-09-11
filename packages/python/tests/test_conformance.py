@@ -4,12 +4,14 @@ Every case class here has a twin in packages/node once M2 lands. Adding a
 case to cases.yaml tightens both engines at once. The Python engine claims
 every class — nothing here may skip (spec/README).
 """
+import io
 import json
 import shutil
 
 import pytest
 import yaml
 
+from brainpick.cli import main
 from brainpick.compile.pipeline import check_fresh, run_compile
 from brainpick.compile.t1 import build_docs_records, render_report_block
 from brainpick.compile.t2 import build_chunks
@@ -110,6 +112,21 @@ def _mock_query_hits(root, case) -> list[dict]:
     )
     assert body["degraded_from"] is None  # the mock path must never fall back
     return body["hits"]
+
+
+@pytest.mark.parametrize("case", _cases("recall"), ids=_case_ids("recall"))
+def test_recall_golden(case, tmp_path, monkeypatch, capsys):
+    """spec/72: the hook's stdout, byte for byte — T1 only, so `auto` is keyword and exact."""
+    root = _bundle_copy(tmp_path, case["bundle"])
+    run_compile(root)
+    monkeypatch.setenv("BRAINPICK_RECALL_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(case["payload"])))
+    assert main(["recall", "--root", str(root)]) == 0
+    out = capsys.readouterr().out
+    if case.get("expect_empty"):
+        assert out == ""
+    else:
+        assert out == (EXPECTED / case["bundle"] / case["golden"]).read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("case", _cases("query"), ids=_case_ids("query"))
