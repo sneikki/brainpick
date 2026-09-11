@@ -15,6 +15,14 @@ export const content = `<!-- markdownlint-disable -->
 
 # brainpick
 
+> **This is a fork.** [sneikki/brainpick](https://github.com/sneikki/brainpick)
+> is Nuutti Varvikko's fork of
+> [benquemax/brainpick](https://github.com/benquemax/brainpick), branched at
+> 0.4.0 and developed on its own roadmap: useful concepts from upstream are
+> re-implemented here, not merged. The \`brainpick\` package on PyPI, the
+> release installers and the live demo are upstream's and do not carry this
+> fork's changes — install the fork from git (see the quick start).
+
 **A turn-key brain stack for AI agents — plain markdown in, a living
 knowledge graph out.** Your agents' knowledge lives as an
 [OKF](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
@@ -28,9 +36,9 @@ ever required.
 
 Humans get a separate, optional face: the **holographic brain**, a web UI
 that renders the same compiled graph and updates live while agents write.
-It is a window into the brain, never a dependency of it — see the
-[live demo](https://benquemax.github.io/brainpick/), this repository's own
-docs compiled and served by brainpick itself.
+It is a window into the brain, never a dependency of it — see upstream's
+[live demo](https://benquemax.github.io/brainpick/), its own docs compiled
+and served by brainpick itself.
 `;
 
 export const validate = async () => {

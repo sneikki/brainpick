@@ -1,6 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+// This fork is not on PyPI: every install line takes the git source.
+const FORK_GIT = 'git+https://github.com/sneikki/brainpick#subdirectory=packages/python';
+
 export const content = `## Quick start
 
 ### Give your agent a brain — paste one prompt
@@ -8,9 +11,10 @@ export const content = `## Quick start
 Agentic setup is the primary path: your coding agent installs brainpick,
 compiles the brain, and wires itself to it. Paste this to the agent:
 
-> Install brainpick (\`uv tool install brainpick\`, or \`pipx install
-> brainpick\`). In the repo that holds (or should hold) the
-> markdown knowledge base, run \`brainpick init\` — it detects the bundle,
+> Install brainpick from the fork (\`uv tool install
+> ${FORK_GIT}\`, or \`pipx install\` with the same source).
+> In the repo that holds (or should hold) the markdown knowledge base,
+> run \`brainpick init\` — it detects the bundle,
 > detects an embedding backend if one is reachable, writes the config, and
 > compiles tier 1. If there is no bundle yet, it hands off to henxels:
 > \`uvx henxels init --template brainpick-brain\` for a brain (an agent's
@@ -32,13 +36,14 @@ exist as plain CLI verbs (\`brainpick search\` · \`read\` · \`neighbors\` ·
 The same journey by hand:
 
 \`\`\`bash
-uv tool install brainpick        # or: pipx install brainpick
+uv tool install ${FORK_GIT}
+# or: pipx install ${FORK_GIT}
 brainpick init                   # detect bundle + backends, write config, compile T1
 brainpick integrate claude-code  # Agent Skill + the MCP wiring snippet
 brainpick search "anything"      # the brain answers from the terminal
 \`\`\`
 
-One-shot flavor works too: \`uvx brainpick init\`.
+One-shot flavor works too: \`uvx --from ${FORK_GIT} brainpick init\`.
 
 ### No wiki yet, or a messy one? henxels drives
 
@@ -66,14 +71,16 @@ GUI is for the humans: the **holographic brain** — search, spin, and
 time-travel the same compiled graph the agents walk, updating live with
 every write. Nice to have, never required.
 
-- **Zero install** — the [live demo](https://benquemax.github.io/brainpick/)
-  is this repo's own docs wiki, baked into a static snapshot and redeployed
+- **Zero install** — upstream's [live demo](https://benquemax.github.io/brainpick/)
+  is its own docs wiki, baked into a static snapshot and redeployed
   with every release: the real UI, searchable, with the full time machine,
   served by GitHub Pages with no engine behind it.
 - **One command** — \`brainpick serve --root docs --open\` opens the UI over
-  any compiled brain.
-- **The desktop app** — grab an installer from the
-  [latest release](https://github.com/benquemax/brainpick/releases): Linux
+  any compiled brain. A git install carries no prebuilt UI (releases bundle
+  it); from a checkout, \`npm run build -w packages/webui\` first.
+- **The desktop app** — grab an installer from upstream's
+  [latest release](https://github.com/benquemax/brainpick/releases) (without
+  this fork's changes): Linux
   \`Brainpick_*.AppImage\` (\`chmod +x\`, needs system \`webkit2gtk-4.1\`),
   macOS \`Brainpick_*.dmg\` (right-click → Open; the build is unsigned),
   Windows \`Brainpick_*.msi\` (SmartScreen → More info → Run anyway). First
@@ -88,7 +95,7 @@ every write. Nice to have, never required.
 Both engines work straight from a clone — Python (the reference
 implementation, and the published package) and native Node, no Python
 required. The npm registry publish is
-[deliberately parked](https://github.com/benquemax/brainpick/blob/main/docs/reference/adr/pypi-first-release.md)
+[deliberately parked](https://github.com/sneikki/brainpick/blob/main/docs/reference/adr/pypi-first-release.md)
 until there is npm-side demand; the engine itself is a full native peer:
 
 \`\`\`bash
@@ -101,15 +108,23 @@ export const validate = async () => {
   const root = path.join(__dirname, '..');
   const vision = fs.readFileSync(path.join(root, '_vision.md'), 'utf-8');
 
-  // The pip one-liner stays in sync with _vision.md; the npm publish is
-  // parked by ADR, so the quick start must say so instead of promising npx.
-  for (const cmd of ['uvx brainpick']) {
+  // The one-liner _vision.md promises (uvx brainpick) is taken from the fork's
+  // git source, since the fork is not on PyPI; the npm publish is parked by ADR,
+  // so the quick start must say so instead of promising npx.
+  if (!vision.includes('uvx brainpick')) {
+    throw new Error('Quick start shows the uvx one-liner but _vision.md no longer promises "uvx brainpick"');
+  }
+  for (const cmd of [`uvx --from ${FORK_GIT} brainpick`, `uv tool install ${FORK_GIT}`]) {
     if (!content.includes(cmd)) {
-      throw new Error(`Quick start must show "${cmd}"`);
+      throw new Error(`Quick start must install the fork from git: "${cmd}"`);
     }
-    if (!vision.includes(cmd)) {
-      throw new Error(`Quick start promises "${cmd}" but _vision.md does not mention it`);
-    }
+  }
+  if (/(uv tool|pipx) install brainpick\b/.test(content)) {
+    throw new Error('Quick start installs brainpick from PyPI — that is upstream\'s package, not this fork');
+  }
+  const pyproject = fs.readFileSync(path.join(root, 'packages', 'python', 'pyproject.toml'), 'utf-8');
+  if (!/^name = "brainpick"$/m.test(pyproject)) {
+    throw new Error('The git install names the package brainpick — packages/python/pyproject.toml must still build it');
   }
   const parkedAdr = 'docs/reference/adr/pypi-first-release.md';
   if (content.includes('npm i -g brainpick') || content.includes('npx brainpick')) {

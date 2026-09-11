@@ -42,7 +42,7 @@ author already had — expensive enough to run once in a while, outdated from
 day one, and re-derived from zero every pass, so nothing an agent learns
 today makes tomorrow's graph better. Brainpick ran LightRAG early on and
 retired it for exactly that reason
-([ADR](https://github.com/benquemax/brainpick/blob/main/docs/reference/adr/similarity-gap-detector.md));
+([ADR](https://github.com/sneikki/brainpick/blob/main/docs/reference/adr/similarity-gap-detector.md));
 there is no LLM extractor in the mix. A graph the brain's own authors build
 as they write is one the brain evolves *with*; a graph extracted from it is
 a snapshot of it. Yes, this is reinventing knowledge graphs — on the premise
@@ -50,7 +50,7 @@ that the associations belong in the files, where they are made by whoever
 knows them best, at the moment they are known.
 
 Everything else in this README is engineering in service of that bet: the
-[brain format](https://github.com/benquemax/brainpick/blob/main/spec/85-brain-format.md)
+[brain format](https://github.com/sneikki/brainpick/blob/main/spec/85-brain-format.md)
 turns notes into memory with a data flow (journals → knowledge → skills),
 [henxels](https://github.com/benquemax/henxels) keeps every write true so the
 brain can be trusted, and the tiers make retrieval cheap enough that a small

@@ -46,9 +46,22 @@ one of them.
 - **Docs-as-you-go:** every feature lands with its wiki concept page(s) in
   the same commit — the wiki must grow with the code, both as documentation
   and as test mass for the interface.
-- README links are absolute URLs (the file ships to PyPI/npm).
-- **Git etiquette:** never `git push` — that is Tom's call, always. Staging
-  and committing completed, verified work is fine.
+- **This repo is a fork.** `origin` is `sneikki/brainpick`, Nuutti's fork of
+  `benquemax/brainpick` (the `upstream` remote), branched at 0.4.0 and
+  developed on its own roadmap. Upstream is a source of ideas, not a merge
+  base: a useful upstream concept is re-implemented here through the normal
+  spec-first, test-first flow — never merge or cherry-pick `upstream/main`,
+  and never push to `upstream`.
+- README links are absolute URLs to `https://github.com/sneikki/brainpick`
+  (the file is also the package readme). Upstream's hosted assets — the Pages
+  demo, the release installers, the PyPI package — are linked as upstream's;
+  the fork installs from git, and README.md.codx enforces both.
+- **Git etiquette:** work on a branch; changes reach `main` only through a
+  pull request on `sneikki/brainpick` — never commit or push to `main`
+  directly. Staging, committing and pushing a branch with completed, verified
+  work is fine; opening and merging its PR is Nuutti's call unless he asks.
+  GitHub Actions do not run on the fork until workflows are enabled in its
+  Actions tab, so verify locally before a PR.
 
 ## Toolchain
 

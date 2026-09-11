@@ -12,6 +12,14 @@
 
 # brainpick
 
+> **This is a fork.** [sneikki/brainpick](https://github.com/sneikki/brainpick)
+> is Nuutti Varvikko's fork of
+> [benquemax/brainpick](https://github.com/benquemax/brainpick), branched at
+> 0.4.0 and developed on its own roadmap: useful concepts from upstream are
+> re-implemented here, not merged. The `brainpick` package on PyPI, the
+> release installers and the live demo are upstream's and do not carry this
+> fork's changes — install the fork from git (see the quick start).
+
 **A turn-key brain stack for AI agents — plain markdown in, a living
 knowledge graph out.** Your agents' knowledge lives as an
 [OKF](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
@@ -25,9 +33,9 @@ ever required.
 
 Humans get a separate, optional face: the **holographic brain**, a web UI
 that renders the same compiled graph and updates live while agents write.
-It is a window into the brain, never a dependency of it — see the
-[live demo](https://benquemax.github.io/brainpick/), this repository's own
-docs compiled and served by brainpick itself.
+It is a window into the brain, never a dependency of it — see upstream's
+[live demo](https://benquemax.github.io/brainpick/), its own docs compiled
+and served by brainpick itself.
 
 
 ## Listen instead
@@ -37,7 +45,7 @@ associations are made at write time, and the two commands that get you
 started. Synthesized from the transcript beside it — no human was recorded.
 
 **▶ [Play the episode (mp3, 5 min)](https://benquemax.github.io/brainpick/assets/audio/brainpick-episode.mp3)**
-· [transcript](https://github.com/benquemax/brainpick/blob/main/docs/assets/audio/brainpick-episode.txt)
+· [transcript](https://github.com/sneikki/brainpick/blob/main/docs/assets/audio/brainpick-episode.txt)
 
 
 
@@ -82,7 +90,7 @@ author already had — expensive enough to run once in a while, outdated from
 day one, and re-derived from zero every pass, so nothing an agent learns
 today makes tomorrow's graph better. Brainpick ran LightRAG early on and
 retired it for exactly that reason
-([ADR](https://github.com/benquemax/brainpick/blob/main/docs/reference/adr/similarity-gap-detector.md));
+([ADR](https://github.com/sneikki/brainpick/blob/main/docs/reference/adr/similarity-gap-detector.md));
 there is no LLM extractor in the mix. A graph the brain's own authors build
 as they write is one the brain evolves *with*; a graph extracted from it is
 a snapshot of it. Yes, this is reinventing knowledge graphs — on the premise
@@ -90,7 +98,7 @@ that the associations belong in the files, where they are made by whoever
 knows them best, at the moment they are known.
 
 Everything else in this README is engineering in service of that bet: the
-[brain format](https://github.com/benquemax/brainpick/blob/main/spec/85-brain-format.md)
+[brain format](https://github.com/sneikki/brainpick/blob/main/spec/85-brain-format.md)
 turns notes into memory with a data flow (journals → knowledge → skills),
 [henxels](https://github.com/benquemax/henxels) keeps every write true so the
 brain can be trusted, and the tiers make retrieval cheap enough that a small
@@ -178,7 +186,7 @@ block-beta
 - **OKF** is the file format: plain markdown, a frontmatter `type`, an
   `index.md`, a `log.md`. Any OKF bundle — a wiki, a docs folder, a pile of
   notes with `type:` — is a valid input to everything above.
-- **The brain format** ([spec/85](https://github.com/benquemax/brainpick/blob/main/spec/85-brain-format.md))
+- **The brain format** ([spec/85](https://github.com/sneikki/brainpick/blob/main/spec/85-brain-format.md))
   is OKF plus opinions: folders as memory types (`knowledge/ skills/
   journals/ vision/ plans/`, `raw/` for source material), inline grounding,
   a data-flow architecture (journals → knowledge → skills, read in reverse),
@@ -213,9 +221,10 @@ dependency: nothing above depends on anything more than the layer below.
 Agentic setup is the primary path: your coding agent installs brainpick,
 compiles the brain, and wires itself to it. Paste this to the agent:
 
-> Install brainpick (`uv tool install brainpick`, or `pipx install
-> brainpick`). In the repo that holds (or should hold) the
-> markdown knowledge base, run `brainpick init` — it detects the bundle,
+> Install brainpick from the fork (`uv tool install
+> git+https://github.com/sneikki/brainpick#subdirectory=packages/python`, or `pipx install` with the same source).
+> In the repo that holds (or should hold) the markdown knowledge base,
+> run `brainpick init` — it detects the bundle,
 > detects an embedding backend if one is reachable, writes the config, and
 > compiles tier 1. If there is no bundle yet, it hands off to henxels:
 > `uvx henxels init --template brainpick-brain` for a brain (an agent's
@@ -237,13 +246,14 @@ exist as plain CLI verbs (`brainpick search` · `read` · `neighbors` ·
 The same journey by hand:
 
 ```bash
-uv tool install brainpick        # or: pipx install brainpick
+uv tool install git+https://github.com/sneikki/brainpick#subdirectory=packages/python
+# or: pipx install git+https://github.com/sneikki/brainpick#subdirectory=packages/python
 brainpick init                   # detect bundle + backends, write config, compile T1
 brainpick integrate claude-code  # Agent Skill + the MCP wiring snippet
 brainpick search "anything"      # the brain answers from the terminal
 ```
 
-One-shot flavor works too: `uvx brainpick init`.
+One-shot flavor works too: `uvx --from git+https://github.com/sneikki/brainpick#subdirectory=packages/python brainpick init`.
 
 ### No wiki yet, or a messy one? henxels drives
 
@@ -271,14 +281,16 @@ GUI is for the humans: the **holographic brain** — search, spin, and
 time-travel the same compiled graph the agents walk, updating live with
 every write. Nice to have, never required.
 
-- **Zero install** — the [live demo](https://benquemax.github.io/brainpick/)
-  is this repo's own docs wiki, baked into a static snapshot and redeployed
+- **Zero install** — upstream's [live demo](https://benquemax.github.io/brainpick/)
+  is its own docs wiki, baked into a static snapshot and redeployed
   with every release: the real UI, searchable, with the full time machine,
   served by GitHub Pages with no engine behind it.
 - **One command** — `brainpick serve --root docs --open` opens the UI over
-  any compiled brain.
-- **The desktop app** — grab an installer from the
-  [latest release](https://github.com/benquemax/brainpick/releases): Linux
+  any compiled brain. A git install carries no prebuilt UI (releases bundle
+  it); from a checkout, `npm run build -w packages/webui` first.
+- **The desktop app** — grab an installer from upstream's
+  [latest release](https://github.com/benquemax/brainpick/releases) (without
+  this fork's changes): Linux
   `Brainpick_*.AppImage` (`chmod +x`, needs system `webkit2gtk-4.1`),
   macOS `Brainpick_*.dmg` (right-click → Open; the build is unsigned),
   Windows `Brainpick_*.msi` (SmartScreen → More info → Run anyway). First
@@ -293,7 +305,7 @@ every write. Nice to have, never required.
 Both engines work straight from a clone — Python (the reference
 implementation, and the published package) and native Node, no Python
 required. The npm registry publish is
-[deliberately parked](https://github.com/benquemax/brainpick/blob/main/docs/reference/adr/pypi-first-release.md)
+[deliberately parked](https://github.com/sneikki/brainpick/blob/main/docs/reference/adr/pypi-first-release.md)
 until there is npm-side demand; the engine itself is a full native peer:
 
 ```bash
@@ -304,14 +316,15 @@ npm run build -w packages/node && node packages/node/dist/cli.js serve --root do
 
 ## Status
 
-**Early.** The full stack is built and the desktop app is downloadable from
-[Releases](https://github.com/benquemax/brainpick/releases) for early testers.
-The vision is committed in
-[`_vision.md`](https://github.com/benquemax/brainpick/blob/main/_vision.md);
-the milestones (Ensilento → Kaksoisveto → Hologrammi) landed. The `brainpick`
-pip package is [published on PyPI](https://pypi.org/project/brainpick/) as of
-v0.1. The npm publish is
-[parked by ADR](https://github.com/benquemax/brainpick/blob/main/docs/reference/adr/pypi-first-release.md);
+**Early, and a fork.** The full stack is built; upstream's desktop app is
+downloadable from its [Releases](https://github.com/benquemax/brainpick/releases)
+for early testers. The vision is committed in
+[`_vision.md`](https://github.com/sneikki/brainpick/blob/main/_vision.md);
+the milestones (Ensilento → Kaksoisveto → Hologrammi) landed. Upstream's
+`brainpick` pip package is [published on PyPI](https://pypi.org/project/brainpick/)
+as of v0.1; this fork publishes nothing yet and installs from git. The npm
+publish is
+[parked by ADR](https://github.com/sneikki/brainpick/blob/main/docs/reference/adr/pypi-first-release.md);
 the Node engine ships in-repo as a native peer until npm-side demand shows up.
 
 

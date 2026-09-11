@@ -10,7 +10,7 @@ associations are made at write time, and the two commands that get you
 started. Synthesized from the transcript beside it — no human was recorded.
 
 **▶ [Play the episode (mp3, 5 min)](https://benquemax.github.io/brainpick/assets/audio/brainpick-episode.mp3)**
-· [transcript](https://github.com/benquemax/brainpick/blob/main/docs/assets/audio/brainpick-episode.txt)
+· [transcript](https://github.com/sneikki/brainpick/blob/main/docs/assets/audio/brainpick-episode.txt)
 
 `;
 
