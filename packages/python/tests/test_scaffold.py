@@ -208,9 +208,12 @@ def test_init_suggests_only_the_missing_gitignore_line(tmp_path, capsys):
     (repo / ".gitignore").write_text(".brainpick/\n.brainpick-auth.json\n", encoding="utf-8")
     bundle = typed_bundle(repo / "wiki")
     assert run_init(bundle, env={}, probes=NO_BACKENDS) == 0
-    out = capsys.readouterr().out
-    assert "brainpick.local.toml" in out
-    assert ".brainpick/" not in out  # only the missing line is suggested
+    lines = capsys.readouterr().out.splitlines()
+    # only the missing line is suggested — matched as whole suggestion lines, since
+    # the MCP snippets print absolute paths and a checkout may itself contain
+    # ".brainpick/" (a clone in a directory named benquemax.brainpick did)
+    assert "    brainpick.local.toml" in lines
+    assert "    .brainpick/" not in lines
 
 
 def test_init_skips_gitignore_suggestion_when_covered(tmp_path, capsys):
