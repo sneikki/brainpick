@@ -5,6 +5,7 @@ a transport; create_mcp_server() wraps them in a FastMCP for stdio and /mcp alik
 """
 from __future__ import annotations
 
+import json
 import posixpath
 import re
 import threading
@@ -474,21 +475,108 @@ def _run_henxels(state: ServeState, rel: str) -> tuple[str | None, str | None]:
     return None, None
 
 
+def _clock() -> datetime:
+    """The server's clock (spec/70 server-owned clocks), read once per write — models
+    do not know the wall clock, so no written time comes from the writer. Tests pin it."""
+    return datetime.now(timezone.utc)
+
+
+def _split_block(text: str) -> tuple[str | None, str]:
+    """(raw frontmatter block or None, body) — the block's text, not its parse."""
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 3)
+        if end != -1:
+            return text[4:end], text[end + 5:]
+    return None, text
+
+
 def _bump_timestamp(text: str, now: str) -> str:
     """Refresh (or insert) the frontmatter timestamp without reformatting anything else.
     A doc with no frontmatter block is left untouched: OKF reserved files (index.md,
     log.md) and journals are frontmatter-free by contract, and adding one here would
-    turn a write that just passed henxels into a file the contract rejects (spec/70)."""
-    if text.startswith("---\n"):
-        end = text.find("\n---\n", 3)
-        if end != -1:
-            frontmatter = text[4:end]
-            if _TS_LINE.search(frontmatter):
-                frontmatter = _TS_LINE.sub(f"timestamp: {now}", frontmatter, count=1)
-            else:
-                frontmatter = frontmatter + f"\ntimestamp: {now}"
-            return "---\n" + frontmatter + "\n---\n" + text[end + 5:]
-    return text
+    turn a write into a file the contract rejects (spec/70)."""
+    frontmatter, body = _split_block(text)
+    if frontmatter is None:
+        return text
+    if _TS_LINE.search(frontmatter):
+        frontmatter = _TS_LINE.sub(f"timestamp: {now}", frontmatter, count=1)
+    else:
+        frontmatter = frontmatter + f"\ntimestamp: {now}"
+    return "---\n" + frontmatter + "\n---\n" + body
+
+
+_META_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
+_TOP_KEY = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*):(?:\s|$)")
+_PLAIN = re.compile(r"[A-Za-z][A-Za-z0-9 ._/()+-]*")
+_YAML_WORDS = {"true", "false", "yes", "no", "on", "off", "y", "n", "null"}
+
+
+def _meta_problem(meta: dict) -> str | None:
+    """spec/70 meta: plain keys; a string, a list of strings, or null per key."""
+    for key, value in meta.items():
+        if not isinstance(key, str) or not _META_KEY.fullmatch(key):
+            return f"meta key '{key}' is not a frontmatter key — use letters, digits, _ and -"
+        if not (value is None or isinstance(value, str)
+                or (isinstance(value, list) and all(isinstance(item, str) for item in value))):
+            return f"meta '{key}' must be a string, a list of strings, or null (removes the key)"
+    return None
+
+
+def _yaml_scalar(value: str) -> str:
+    """Plain when YAML cannot misread it, else a JSON string (valid YAML double-quoted)."""
+    if _PLAIN.fullmatch(value) and not value.endswith(" ") and value.lower() not in _YAML_WORDS:
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _merge_meta(block: str, meta: dict) -> str:
+    """Keep `block` byte for byte except the top-level keys `meta` names: a named key's
+    span (its line plus the indented / `- ` lines under it) is rewritten in place or
+    dropped for null; keys the block lacks are appended in meta's order (spec/70)."""
+    spans: list[tuple[str | None, list[str]]] = []
+    for line in block.split("\n") if block else []:
+        head = _TOP_KEY.match(line)
+        if head or not spans:
+            spans.append((head.group(1) if head else None, [line]))
+        else:
+            spans[-1][1].append(line)
+
+    def line_for(key: str, value) -> str:
+        if isinstance(value, list):
+            return f"{key}: [{', '.join(_yaml_scalar(item) for item in value)}]"
+        return f"{key}: {_yaml_scalar(value)}"
+
+    out: list[str] = []
+    for key, lines in spans:
+        if key in meta:
+            if meta[key] is not None:
+                out.append(line_for(key, meta[key]))
+        else:
+            out.extend(lines)
+    present = {key for key, _ in spans}
+    out += [line_for(key, value) for key, value in meta.items() if key not in present and value is not None]
+    return "\n".join(out)
+
+
+def _compose(previous: str | None, content: str, mode: str, meta: dict) -> str:
+    """spec/70 step 2 for every mode but add_entry: the doc `mode` and `meta` make,
+    before the timestamp stamp."""
+    if mode == "append_section" and previous is not None:
+        text = previous.rstrip("\n") + "\n\n" + content
+        block, body = _split_block(text)
+        if not meta:
+            return text
+        bare = block is None
+    else:
+        block, body = _split_block(content)
+        bare = block is None
+        if bare and mode == "replace" and previous is not None:
+            block = _split_block(previous)[0]
+        if block is None and not meta:
+            return content
+    if meta:
+        block = _merge_meta(block or "", meta)
+    return "---\n" + block + "\n---\n" + ("\n" + body.lstrip("\n") if bare else body)
 
 
 def conflict_payload(state: ServeState, rel: str, previous: bytes, yours: str, base_sha: str,
@@ -526,17 +614,22 @@ def conflict_payload(state: ServeState, rel: str, previous: bytes, yours: str, b
 _DAY_STEM = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
-def _insert_entry(previous: str | None, entry: str, stem: str) -> tuple[str | None, str]:
-    """mode add_entry (spec/70): place ONE `* **HH:MM**` entry into a newest-first day
-    file — after every entry with a later time, before the first with the same or an
-    earlier one — without the caller echoing the day back. A missing day file is
-    created with its `# date` / `## date` head from the file stem. Returns
-    (instruction, text): instruction set means nothing may be written."""
+_ENTRY_HEAD = re.compile(r"^\* (?:\*\*\d{2}:\d{2}\*\* *)?")
+
+
+def _insert_entry(previous: str | None, entry: str, stem: str, hhmm: str) -> tuple[str | None, str]:
+    """mode add_entry (spec/70): stamp ONE entry with the server's `**HH:MM**` head and
+    place it into a newest-first day file — after every entry with a later time, before
+    the first with the same or an earlier one — without the caller echoing the day back.
+    A missing day file is created with its `# date` / `## date` head from the file stem.
+    Returns (instruction, text): instruction set means nothing may be written."""
+    if not entry.startswith("* "):
+        return ("add_entry takes exactly one journal entry — content must be one list item, "
+                "'* `project` · type — text' (continuation lines indented two spaces); "
+                "the server stamps its **HH:MM** head"), ""
+    entry = _ENTRY_HEAD.sub(f"* **{hhmm}** ", entry, count=1).rstrip("\n")
     head = _ENTRY.match(entry)
-    if not head:
-        return ("add_entry takes exactly one journal entry — content must start with "
-                "'* **HH:MM** `project` · type — text' (continuation lines indented two spaces)"), ""
-    entry = entry.rstrip("\n")
+    assert head is not None  # the head was just written
     if previous is None:
         if not _DAY_STEM.match(stem):
             return (f"add_entry creates only day files named YYYY-MM-DD, not '{stem}' — "
@@ -563,32 +656,38 @@ _WRITE_LOCK = threading.RLock()
 
 
 def guarded_write(state: ServeState, doc: str, content: str, mode: str = "create",
-                  base_sha: str | None = None, budget_tokens: int | None = None) -> tuple[str, dict]:
-    """The one guarded write path (spec/70): resolve → atomic write → henxels
-    referee → rollback-or-recompile → live delta, plus base_sha optimistic
-    concurrency and the merge ladder — under the process write lock. Returns (status, payload):
+                  base_sha: str | None = None, budget_tokens: int | None = None,
+                  meta: dict | None = None) -> tuple[str, dict]:
+    """The one guarded write path (spec/70): resolve → compose and stamp → atomic
+    write → henxels referee → rollback-or-recompile → live delta, plus base_sha
+    optimistic concurrency and the merge ladder — under the process write lock.
+    Returns (status, payload):
 
       "ok"        → {"path", "seq", "sha", "warning"?}  (sha = new content sha256)
       "badpath"   → {"instruction"}                     (traversal / non-kebab / reserved)
       "conflict"  → the full spec/70 conflict dict (ok/conflict/current_sha/theirs/…/merged?)
-      "violation" → {"instruction"}                     (henxels rejected it; rolled back)
+      "violation" → {"instruction"}                     (henxels or meta rejected it; rolled back)
       "exists"    → {"instruction"}                     (create mode, target present)
 
     Both brain_write (MCP, via write_payload) and PUT /api/docs (REST) call this —
     one source of truth for the guarded write, mapped onto each surface's shape.
     """
     with _WRITE_LOCK:
-        return _guarded_write(state, doc, content, mode, base_sha, budget_tokens)
+        return _guarded_write(state, doc, content, mode, base_sha, budget_tokens, meta or {})
 
 
 def _guarded_write(state: ServeState, doc: str, content: str, mode: str,
-                   base_sha: str | None, budget_tokens: int | None) -> tuple[str, dict]:
+                   base_sha: str | None, budget_tokens: int | None, meta: dict) -> tuple[str, dict]:
     if mode not in ("create", "replace", "append_section", "add_entry"):
         mode = "create"  # forgiving enums (spec/70)
 
     rel, problem = _resolve_write_path(state, doc)
     if problem:
         return "badpath", {"instruction": problem}
+    problem = _meta_problem(meta)
+    if problem:
+        return "violation", {"instruction": problem}
+    meta = {key: value for key, value in meta.items() if key != "timestamp"}  # server-owned
     target = state.root / rel
     previous = target.read_bytes() if target.is_file() else None
     text = content if content.endswith("\n") else content + "\n"
@@ -609,15 +708,18 @@ def _guarded_write(state: ServeState, doc: str, content: str, mode: str,
         return "exists", {
             "instruction": f"'{rel}' already exists — use mode 'replace' or 'append_section'"}
 
-    if mode == "append_section" and previous is not None:
-        text = previous.decode("utf-8", errors="replace").rstrip("\n") + "\n\n" + text
+    now = _clock()
+    previous_text = previous.decode("utf-8", errors="replace") if previous is not None else None
     if mode == "add_entry":
-        problem, text = _insert_entry(
-            previous.decode("utf-8", errors="replace") if previous is not None else None,
-            text, target.stem)
+        if meta:
+            return "violation", {"instruction": "add_entry takes no meta — journal day files are frontmatter-free"}
+        problem, text = _insert_entry(previous_text, text, target.stem, now.astimezone().strftime("%H:%M"))
         if problem:
             return "violation", {"instruction": problem}
-    _atomic_write(target, text.encode("utf-8"))
+    else:
+        text = _compose(previous_text, text, mode, meta)
+    stamped_bytes = _bump_timestamp(text, now.strftime("%Y-%m-%dT%H:%M:%SZ")).encode("utf-8")
+    _atomic_write(target, stamped_bytes)
 
     violation, warning = _run_henxels(state, rel)
     if violation:
@@ -626,11 +728,6 @@ def _guarded_write(state: ServeState, doc: str, content: str, mode: str,
         else:
             _atomic_write(target, previous)
         return "violation", {"instruction": violation}
-
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    stamped = _bump_timestamp(target.read_text(encoding="utf-8"), now)
-    stamped_bytes = stamped.encode("utf-8")
-    _atomic_write(target, stamped_bytes)
 
     result = recompile_and_broadcast(state)
     payload = {"path": rel, "seq": result.seq, "sha": sha256_hex(stamped_bytes)}
@@ -641,11 +738,11 @@ def _guarded_write(state: ServeState, doc: str, content: str, mode: str,
 
 def _single_write(state: ServeState, doc: str, content: str, mode: str = "create",
                   base_sha: str | None = None, budget_tokens: int | None = None,
-                  refusal: str | None = None) -> dict:
+                  refusal: str | None = None, meta: dict | None = None) -> dict:
     """brain_write's MCP result (spec/70) over the shared guarded_write core."""
     if refusal:
         return {"ok": False, "instruction": refusal}
-    status, payload = guarded_write(state, doc, content, mode, base_sha, budget_tokens)
+    status, payload = guarded_write(state, doc, content, mode, base_sha, budget_tokens, meta)
     if status == "ok":
         out = {"ok": True, "path": payload["path"], "seq": payload["seq"],
                "hint": f"brain_read '{payload['path']}' to verify — connected UIs already got the delta."}
@@ -883,13 +980,13 @@ def neighbors_payload(target, doc: str, depth: int = 1, layer: str = "links",
 
 def write_payload(target, doc: str, content: str, mode: str = "create",
                   base_sha: str | None = None, budget_tokens: int | None = None,
-                  refusal: str | None = None) -> dict:
+                  refusal: str | None = None, meta: dict | None = None) -> dict:
     brain_set = _as_set(target)
     if brain_set is None:
-        return _single_write(target, doc, content, mode, base_sha, budget_tokens, refusal)
+        return _single_write(target, doc, content, mode, base_sha, budget_tokens, refusal, meta)
     if not brain_set.federated:
         return _single_write(brain_set.state_for(brain_set.brains[0]), _strip_alias(brain_set, doc),
-                             content, mode, base_sha, budget_tokens, refusal)
+                             content, mode, base_sha, budget_tokens, refusal, meta)
     alias, rel = split_qualified(doc)
     if alias is None:
         brain = brain_set.here
@@ -902,7 +999,7 @@ def write_payload(target, doc: str, content: str, mode: str = "create",
         if brain is None:
             aliases = ", ".join(b.alias for b in brain_set.brains)
             return {"ok": False, "instruction": f"no brain called '{alias}' — brains here: {aliases}"}
-    result = _single_write(brain_set.state_for(brain), rel, content, mode, base_sha, budget_tokens, refusal)
+    result = _single_write(brain_set.state_for(brain), rel, content, mode, base_sha, budget_tokens, refusal, meta)
     if result.get("ok"):
         result["path"] = qualify(brain.alias, result["path"])
         result["brain"] = brain.alias
@@ -1039,19 +1136,23 @@ def create_mcp_server(state, write_refusal: str | None = None, session_id: str |
         return neighbors_payload(state, doc, depth, layer, budget_tokens)
 
     @server.tool()
-    def brain_write(doc: str, content: str, mode: str = "create",
+    def brain_write(doc: str, content: str, mode: str = "create", meta: dict | None = None,
                     base_sha: str | None = None, budget_tokens: int | None = None) -> dict:
         """Write a markdown doc into the bundle, guarded by its henxels contract. mode is
         create (default, never overwrites), replace, append_section, or add_entry —
-        content is ONE journal entry (`* **HH:MM** ...`) and the server slots it into
-        the newest-first day file (creating the day when missing), so a day is never
-        echoed back to add a line. Pass base_sha
+        content is ONE journal entry ('* `project` · type — text') and the server stamps
+        its **HH:MM** head and slots it into the newest-first day file (creating the day
+        when missing), so a day is never echoed back to add a line. meta is the
+        frontmatter as data ({"type", "title", "description", "tags": [...]}; null
+        removes a key): send content as the body only and the server writes the YAML;
+        a body-only replace keeps the page's frontmatter and merges meta into it. Never
+        send a timestamp or invent a time — the server stamps both. Pass base_sha
         (the sha256 of the content you last read) to catch concurrent edits: on a
         mismatch nothing is written and the result returns the current content, its
         current_sha to retry with, and — when resolvable — a merged proposal. On a
         contract violation nothing changes and instruction says exactly what to fix."""
         return write_payload(state, doc, content, mode, base_sha=base_sha,
-                             budget_tokens=budget_tokens, refusal=write_refusal)
+                             budget_tokens=budget_tokens, refusal=write_refusal, meta=meta)
 
     @server.tool()
     def brain_show(nodes: list[str] | None = None, focus: str | None = None,

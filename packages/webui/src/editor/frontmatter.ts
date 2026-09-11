@@ -8,7 +8,7 @@
  *
  * `timestamp` is the server's to manage (spec/50) — the form never shows it —
  * but a fresh one is emitted here so a contracted bundle's henxels bump-on-change
- * rule is satisfied at write time; the engine re-stamps it after the referee passes.
+ * rule is satisfied at write time; the engine re-stamps it before the referee runs (spec/70).
  */
 
 export interface Frontmatter {

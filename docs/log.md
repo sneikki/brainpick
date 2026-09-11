@@ -1,5 +1,16 @@
 # Update log
 
+## 2026-09-11
+
+- Changed: `brain_write` owns every clock (spec/70). The frontmatter
+  `timestamp` is stamped before the henxels referee runs, so a contract that
+  requires it no longer makes the writer invent one, and `add_entry` writes the
+  entry's `**HH:MM**` head from the server's local clock — a model had been
+  heading entries with times hours in the future.
+- Added: `brain_write`'s `meta` — the frontmatter as data. The server
+  serializes it to YAML and merges it key by key into the page's block, and a
+  body-only `replace` keeps the page's frontmatter.
+
 ## 2026-09-07
 
 - Released 0.4.0: `brain_search`'s `why` now names the query tokens that

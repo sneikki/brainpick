@@ -86,7 +86,10 @@ async def _scenario(root):
                 "maa.md", "kuu.md", "planeetat.md", "index.md",
             }
 
-            written = await _call(session, "brain_write", {"doc": "uusi-kivi", "content": NEW_DOC})
+            written = await _call(session, "brain_write", {  # meta crosses the transport (spec/70)
+                "doc": "uusi-kivi", "content": "# Uusi kivi\n\nNear [Kuu](kuu.md).\n",
+                "meta": {"type": "Concept", "title": "Uusi kivi", "description": "A new rock."},
+            })
             assert written["ok"] is True
             assert written["path"] == "uusi-kivi.md"
             assert written["seq"] == 2
@@ -109,6 +112,7 @@ def test_mcp_stdio_roundtrip(kotiaurinko):
     run_compile(kotiaurinko)
     _run_scenario(_scenario(kotiaurinko))
     text = (kotiaurinko / "uusi-kivi.md").read_text(encoding="utf-8")
+    assert text.startswith("---\ntype: Concept\ntitle: Uusi kivi\ndescription: A new rock.\ntimestamp: ")
     assert re.search(r"^timestamp: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", text, re.MULTILINE)
     manifest = json.loads((kotiaurinko / ".brainpick" / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["seq"] == 2

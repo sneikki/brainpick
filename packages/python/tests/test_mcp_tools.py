@@ -3,7 +3,9 @@ import json
 import os
 import re
 import subprocess
+from datetime import datetime, timezone
 
+import brainpick.mcp_server as mcp_server
 from brainpick.config import load_config
 from brainpick.core.canonical import sha256_hex
 from brainpick.llm import MockChat
@@ -27,6 +29,17 @@ KUU_REWRITE = (
     "---\ntype: Concept\ntags: [kuu]\ntimestamp: 2026-06-15T08:30:00Z\n---\n\n"
     "# Kuu\n\nThe moon pulls the tides of [Maa](maa.md), rewritten.\n"
 )
+
+
+def set_clock(monkeypatch, *hhmm: str) -> str:
+    """Pin the server clock (spec/70 server-owned clocks): each write reads the next
+    local wall-clock time on 2026-06-02, the last one repeating. Returns the first
+    instant as the frontmatter stamp it becomes."""
+    instants = [datetime(2026, 6, 2, int(t[:2]), int(t[3:])).astimezone().astimezone(timezone.utc)
+                for t in hhmm]
+    ticks = iter(instants)
+    monkeypatch.setattr(mcp_server, "_clock", lambda: next(ticks, instants[-1]))
+    return instants[0].strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def make_state(root):
@@ -344,10 +357,11 @@ def test_write_append_section(kotiaurinko):
     assert "The moon pulls" in text  # the original body survives
 
 
-def test_write_add_entry_slots_into_the_newest_first_day(kotiaurinko):
+def test_write_add_entry_slots_into_the_newest_first_day(kotiaurinko, monkeypatch):
     """mode add_entry (spec/70): one entry in, the server places it by time — a missing
     day is created with its head, a later entry goes first, an earlier one after, and
     the caller never echoes the day back."""
+    set_clock(monkeypatch, "09:00", "07:30", "11:15")
     state = make_state(kotiaurinko)
     day = kotiaurinko / "paivakirja" / "2026-06-02.md"
     first = "* **09:00** `kuu` · note — first.\n  more.\n"
@@ -368,21 +382,129 @@ def test_write_add_entry_slots_into_the_newest_first_day(kotiaurinko):
     assert not (kotiaurinko / "muistio.md").exists()
 
 
-def test_concurrent_add_entry_loses_nothing(kotiaurinko):
+def test_concurrent_add_entry_loses_nothing(kotiaurinko, monkeypatch):
     """Fifty threads add one entry each to the same day at once (spec/70: writes are
     serialized server-side) — every entry lands, in time order, none overwritten."""
     from concurrent.futures import ThreadPoolExecutor
 
+    set_clock(monkeypatch, *(f"10:{i:02d}" for i in range(50)))
     state = make_state(kotiaurinko)
     def add(i: int):
-        return write_payload(state, "paivakirja/2026-06-03",
-                             f"* **{i // 60:02d}:{i % 60:02d}** `kuu` · note — entry {i}.", mode="add_entry")
+        return write_payload(state, "paivakirja/2026-06-03", f"* `kuu` · note — entry {i}.", mode="add_entry")
     with ThreadPoolExecutor(max_workers=16) as pool:
         results = list(pool.map(add, range(50)))
     assert all(r["ok"] for r in results), [r for r in results if not r["ok"]][:3]
     text = (kotiaurinko / "paivakirja" / "2026-06-03.md").read_text(encoding="utf-8")
     times = [line[4:9] for line in text.splitlines() if line.startswith("* **")]
-    assert len(times) == 50 and times == sorted(times, reverse=True)
+    assert times == [f"10:{i:02d}" for i in reversed(range(50))]
+    assert all(text.count(f"entry {i}.") == 1 for i in range(50))
+
+
+def test_add_entry_head_is_the_server_clock(kotiaurinko, monkeypatch):
+    """spec/70 server-owned clocks: a model does not know the wall clock, so the entry
+    head is the server's — an invented **HH:MM** is replaced, a missing one inserted."""
+    set_clock(monkeypatch, "07:33", "08:07")
+    state = make_state(kotiaurinko)
+    day = kotiaurinko / "paivakirja" / "2026-06-02.md"
+    invented = write_payload(state, "paivakirja/2026-06-02", "* **12:00** `kuu` · note — invented time.",
+                             mode="add_entry")
+    assert invented["ok"] is True
+    assert write_payload(state, "paivakirja/2026-06-02", "* `kuu` · note — no time.\n  more.",
+                         mode="add_entry")["ok"] is True
+    assert day.read_text(encoding="utf-8") == (
+        "# 2026-06-02\n\n## 2026-06-02\n\n"
+        "* **08:07** `kuu` · note — no time.\n  more.\n\n"
+        "* **07:33** `kuu` · note — invented time.\n"
+    )
+
+
+def test_write_stamps_the_timestamp_before_the_referee(kotiaurinko, monkeypatch):
+    """spec/70 step 2: henxels judges the stamped doc, so a contract that requires a
+    timestamp is met by the server — never by a time the writer had to invent."""
+    stamp = set_clock(monkeypatch, "10:00")
+    seen = {}
+
+    def referee(state, rel):
+        seen[rel] = (state.root / rel).read_text(encoding="utf-8")
+        return None, None
+
+    monkeypatch.setattr(mcp_server, "_run_henxels", referee)
+    state = make_state(kotiaurinko)
+    assert write_payload(state, "uusi-kivi", NEW_DOC)["ok"] is True
+    assert write_payload(state, "kuu.md", KUU_REWRITE, mode="replace")["ok"] is True
+    for rel in ("uusi-kivi.md", "kuu.md"):
+        assert f"\ntimestamp: {stamp}\n" in seen[rel]
+        assert (kotiaurinko / rel).read_text(encoding="utf-8") == seen[rel]
+    assert "08:30:00Z" not in seen["kuu.md"]  # the writer's own timestamp is overwritten
+
+
+# -- brain_write meta (spec/70): the frontmatter as data -----------------------------
+
+
+def test_write_meta_is_serialized_by_the_server(kotiaurinko, monkeypatch):
+    stamp = set_clock(monkeypatch, "10:00")
+    state = make_state(kotiaurinko)
+    result = write_payload(state, "uusi-kivi", "\n# Uusi kivi\n\nNear [Kuu](kuu.md).\n", meta={
+        "type": "Concept", "title": "Uusi kivi", "description": "A new rock: hard, #1.",
+        "tags": ["kivi", "a b: c"], "timestamp": "2026-09-11T12:00:00Z", "aliases": [],
+        "lang": "yes", "note": "Äänitys ", "year": "2026",
+    })
+    assert result["ok"] is True
+    assert (kotiaurinko / "uusi-kivi.md").read_text(encoding="utf-8") == (
+        "---\ntype: Concept\ntitle: Uusi kivi\n"
+        'description: "A new rock: hard, #1."\ntags: [kivi, "a b: c"]\naliases: []\n'
+        'lang: "yes"\nnote: "Äänitys "\nyear: "2026"\n'
+        f"timestamp: {stamp}\n---\n\n# Uusi kivi\n\nNear [Kuu](kuu.md).\n"
+    )
+
+
+def test_write_body_only_replace_keeps_the_frontmatter(kotiaurinko, monkeypatch):
+    stamp = set_clock(monkeypatch, "10:00")
+    state = make_state(kotiaurinko)
+    assert write_payload(state, "kuu.md", "# Kuu\n\nPlain.\n", mode="replace")["ok"] is True
+    assert (kotiaurinko / "kuu.md").read_text(encoding="utf-8") == (
+        f"---\ntype: Concept\ntags: [kuu]\ntimestamp: {stamp}\n---\n\n# Kuu\n\nPlain.\n"
+    )
+    merged = write_payload(state, "kuu.md", "# Kuu\n\nRewritten.\n", mode="replace",
+                           meta={"title": "Kuu", "tags": None})
+    assert merged["ok"] is True
+    assert (kotiaurinko / "kuu.md").read_text(encoding="utf-8") == (
+        f"---\ntype: Concept\ntimestamp: {stamp}\ntitle: Kuu\n---\n\n# Kuu\n\nRewritten.\n"
+    )
+
+
+def test_write_meta_rewrites_whole_key_spans_in_place(kotiaurinko, monkeypatch):
+    stamp = set_clock(monkeypatch, "10:00")
+    state = make_state(kotiaurinko)
+    doc = "---\ntype: Concept\ntags:\n  - a\n  - b\ndescription: >\n  folded\n  text\ntitle: Old\n---\nbody\n"
+    result = write_payload(state, "spans", doc, meta={"tags": ["c"], "description": None, "title": "New"})
+    assert result["ok"] is True
+    assert (kotiaurinko / "spans.md").read_text(encoding="utf-8") == (
+        f"---\ntype: Concept\ntags: [c]\ntitle: New\ntimestamp: {stamp}\n---\nbody\n"
+    )
+
+
+def test_write_append_section_merges_meta_into_the_previous_block(kotiaurinko, monkeypatch):
+    stamp = set_clock(monkeypatch, "10:00")
+    state = make_state(kotiaurinko)
+    result = write_payload(state, "kuu.md", "## Nousuvesi\n\nSpring tides.\n", mode="append_section",
+                           meta={"description": "The moon."})
+    assert result["ok"] is True
+    text = (kotiaurinko / "kuu.md").read_text(encoding="utf-8")
+    assert text.startswith(f"---\ntype: Concept\ntags: [kuu]\ntimestamp: {stamp}\ndescription: The moon.\n---\n\n# Kuu\n")
+    assert text.endswith("```\n\n## Nousuvesi\n\nSpring tides.\n")
+
+
+def test_write_meta_rejects_what_it_cannot_serialize(kotiaurinko):
+    state = make_state(kotiaurinko)
+    for meta in ({"bad key": "x"}, {"n": 3}, {"tags": ["a", 1]}, {"nested": {"a": "b"}}):
+        result = write_payload(state, "uusi", "# X\n", meta=meta)
+        assert result["ok"] is False and "meta" in result["instruction"], meta
+    assert not (kotiaurinko / "uusi.md").exists()
+    entry = write_payload(state, "paivakirja/2026-06-04", "* `kuu` · note — x", mode="add_entry",
+                          meta={"title": "X"})
+    assert entry["ok"] is False and "frontmatter-free" in entry["instruction"]
+    assert not (kotiaurinko / "paivakirja" / "2026-06-04.md").exists()
 
 
 def test_write_gate_refusal(kotiaurinko):

@@ -85,35 +85,81 @@ leading excerpt + hint to request `sections`. Default budget 2000.
 `{"center", "nodes": [{"path", "title", "description", "distance"}],
 "edges": [{"source", "target", "kind"}], "hint"}`. Default budget 800.
 
-## brain_write({doc, content, mode?, base_sha?})
+## brain_write({doc, content, mode?, meta?, base_sha?})
 
 `mode ∈ create|replace|append_section|add_entry` (default `create`). The guarded
 write path:
 
 1. Resolve `doc` to a bundle-relative kebab-case `.md` path (reject
    traversal outside the bundle).
-2. Write atomically (temp + rename), then run the bundle's henxels
+2. Compose the doc: apply `mode` and `meta` (below), then stamp the
+   frontmatter `timestamp` with the server's current UTC time,
+   `YYYY-MM-DDTHH:MM:SSZ` (replacing the key's line, or appending the key
+   when the block lacks it; a doc with no frontmatter block — journals and
+   the OKF reserved `index.md`/`log.md` are frontmatter-free by contract —
+   is left untouched).
+3. Write atomically (temp + rename), then run the bundle's henxels
    contract against that path (when a contract governs the bundle — at its
    root or in a directory above it, the way henxels itself resolves one).
-3. Violations → restore the previous state and return `{"ok": false,
+   The referee sees the stamped doc, so a contract that requires
+   `timestamp`, or its bump on change, is satisfied by the server.
+4. Violations → restore the previous state and return `{"ok": false,
    "instruction": "<henxels output verbatim>"}`.
-4. Pass → bump frontmatter `timestamp` (adding the key when the frontmatter
-   block lacks it; a doc with no frontmatter block — journals and the OKF
-   reserved `index.md`/`log.md` are frontmatter-free by contract — is left
-   untouched), trigger an incremental compile, emit the delta. →
+5. Pass → trigger an incremental compile, emit the delta. →
    `{"ok": true, "path", "seq", "hint"}`.
 
-**`add_entry`**: `content` is exactly ONE log entry — it MUST start with
-`* **HH:MM**` — and the server places it in the day file named by `doc`
-(newest first: after every entry with a later time, before the first with the
-same or an earlier one; a file without entries gets it after its head). A
-missing day file is created as `# <stem>` / `## <stem>` / the entry, and only
-when the stem is `YYYY-MM-DD`; any other shape returns `{"ok": false,
-"instruction"}` and writes nothing. The rest of the path (henxels, timestamp,
-recompile, `base_sha`) is unchanged. This exists because a day file is
-newest-first, so `append_section` cannot add to it and `replace` would make
-the writer echo the whole day back through the call — the lost-update and
-token cost that mode removes.
+**Server-owned clocks**: the writer never supplies a time. Models do not
+know the wall clock and invent one, so every time in a written doc comes
+from the server: the frontmatter `timestamp` (step 2; any `timestamp` the
+writer sent is overwritten) and the `add_entry` head (below). Brainpick
+does not backfill history through this tool; an importer writing past
+episodes writes files and compiles.
+
+**`meta`** (optional): the frontmatter as data, so the writer never
+serializes YAML. An object whose keys match `[A-Za-z_][A-Za-z0-9_-]*` and
+whose values are a string, a list of strings, or `null` (remove the key);
+anything else returns `{"ok": false, "instruction"}` and writes nothing. A
+`timestamp` key is ignored (server-owned). `{}` is the same as omitting it.
+
+- **Base block** (`create`, `replace`). When `content` opens with a frontmatter
+  block, that block is the base and the rest of `content` is the body (a
+  full-doc write, unchanged from before `meta` existed). Otherwise `content`
+  is the body and the base is, for `replace`, the previous doc's block — so a
+  body-only `replace` keeps the page's frontmatter, with or without `meta` —
+  and for `create` none.
+- **Merge.** The base block is kept byte for byte except the top-level keys
+  `meta` names. A top-level key is a column-0 line `key:`; its span runs to
+  the next such line, taking indented and `- ` continuation lines with it. A
+  named key present in the base is rewritten in place (or its span dropped
+  for `null`); a named key absent from it is appended, in `meta`'s order.
+- **Serialization.** One line per key. A string is written plain when it
+  matches `^[A-Za-z][A-Za-z0-9 ._/()+-]*$`, does not end in a space and is
+  not (case-insensitively) `true|false|yes|no|on|off|y|n|null`; otherwise as
+  a JSON string literal (`"…"`, non-ASCII unescaped — valid YAML
+  double-quoted). A list is a flow sequence, `key: [a, "b: c"]`, each item
+  by the same rule; an empty list is `key: []`.
+- **Output.** A block is emitted when the base has one or `meta` is non-empty:
+  `---\n<block>\n---\n` followed by the body — the body verbatim when it came
+  from under `content`'s own block, else a blank line and the body with its
+  leading newlines stripped.
+- `append_section` appends `content` to the previous body, as without `meta`,
+  and merges `meta` into the previous block. `add_entry` rejects a non-empty
+  `meta` with an instruction: day files are frontmatter-free.
+
+**`add_entry`**: `content` is exactly ONE log entry — a column-0 `* ` list
+item — and the server places it in the day file named by `doc`. The entry's
+head is the server's: the server writes `* **HH:MM** ` with its local
+wall-clock time (24-hour), replacing a `**HH:MM**` the writer led with, or
+inserting it after `* ` when there is none. Placement is newest first: after
+every entry with a later time, before the first with the same or an earlier
+one; a file without entries gets it after its head. A missing day file is
+created as `# <stem>` / `## <stem>` / the entry, and only when the stem is
+`YYYY-MM-DD`; any other shape returns `{"ok": false, "instruction"}` and
+writes nothing. The rest of the path (henxels, recompile, `base_sha`) is
+unchanged. This exists because a day file is newest-first, so
+`append_section` cannot add to it and `replace` would make the writer echo
+the whole day back through the call — the lost-update and token cost that
+mode removes.
 
 **Optimistic concurrency (`base_sha`)**: writers SHOULD pass the sha256 of
 the doc content they last read (available from the manifest, `docs.jsonl`,

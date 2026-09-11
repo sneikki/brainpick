@@ -15,6 +15,7 @@ import {
   overviewPayload,
   readPayload,
   searchPayload,
+  serverClock,
   showPayload,
   tokensOf,
   writePayload,
@@ -38,10 +39,22 @@ function git(cwd: string, ...args: string[]): void {
 }
 
 const savedPath = process.env["PATH"];
+const realClock = serverClock.now;
 afterEach(() => {
   process.env["PATH"] = savedPath;
+  serverClock.now = realClock;
   cleanup();
 });
+
+/** Pin the server clock (spec/70 server-owned clocks): each write reads the next local
+ * wall-clock time on 2026-06-02, the last one repeating. Returns the first instant as
+ * the frontmatter stamp it becomes. */
+function setClock(...hhmm: string[]): string {
+  const instants = hhmm.map((t) => new Date(2026, 5, 2, Number(t.slice(0, 2)), Number(t.slice(3))));
+  let tick = 0;
+  serverClock.now = () => instants[Math.min(tick++, instants.length - 1)]!;
+  return instants[0]!.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
 
 async function makeState(root: string): Promise<ServeState> {
   const state = new ServeState(root, loadConfig(root));
@@ -393,6 +406,7 @@ test("write add_entry slots into the newest-first day", async () => {
   // mode add_entry (spec/70): one entry in, the server places it by time — a missing day
   // is created with its head, a later entry goes first, an earlier one after, and the
   // caller never echoes the day back.
+  setClock("09:00", "07:30", "11:15");
   const root = copyBundle();
   const state = await makeState(root);
   const day = join(root, "paivakirja", "2026-06-02.md");
@@ -419,19 +433,142 @@ test("write add_entry slots into the newest-first day", async () => {
 test("concurrent add_entry loses nothing", async () => {
   // Fifty overlapping add_entry calls to one day (spec/70: writes are serialized server-side)
   // — every entry lands, in time order, none overwritten.
+  const pad = (n: number) => String(n).padStart(2, "0");
+  setClock(...Array.from({ length: 50 }, (_, i) => `10:${pad(i)}`));
   const root = copyBundle();
   const state = await makeState(root);
-  const pad = (n: number) => String(n).padStart(2, "0");
   const results = await Promise.all(
     Array.from({ length: 50 }, (_, i) =>
-      writePayload(state, "paivakirja/2026-06-03", `* **${pad(Math.floor(i / 60))}:${pad(i % 60)}** \`kuu\` · note — entry ${i}.`, "add_entry"),
+      writePayload(state, "paivakirja/2026-06-03", `* \`kuu\` · note — entry ${i}.`, "add_entry"),
     ),
   );
   expect(results.every((r) => r["ok"] === true)).toBe(true);
   const text = readFileSync(join(root, "paivakirja", "2026-06-03.md"), "utf8");
   const times = text.split("\n").filter((l) => l.startsWith("* **")).map((l) => l.slice(4, 9));
-  expect(times.length).toBe(50);
-  expect(times).toEqual([...times].sort().reverse());
+  expect(times).toEqual(Array.from({ length: 50 }, (_, i) => `10:${pad(49 - i)}`));
+  for (let i = 0; i < 50; i++) expect(text.split(`entry ${i}.`).length).toBe(2);
+});
+
+test("add_entry head is the server clock", async () => {
+  // spec/70 server-owned clocks: a model does not know the wall clock, so the entry head
+  // is the server's — an invented **HH:MM** is replaced, a missing one inserted.
+  setClock("07:33", "08:07");
+  const root = copyBundle();
+  const state = await makeState(root);
+  const day = join(root, "paivakirja", "2026-06-02.md");
+  const invented = await writePayload(state, "paivakirja/2026-06-02", "* **12:00** `kuu` · note — invented time.", "add_entry");
+  expect(invented["ok"]).toBe(true);
+  const bare = await writePayload(state, "paivakirja/2026-06-02", "* `kuu` · note — no time.\n  more.", "add_entry");
+  expect(bare["ok"]).toBe(true);
+  expect(readFileSync(day, "utf8")).toBe(
+    "# 2026-06-02\n\n## 2026-06-02\n\n" +
+      "* **08:07** `kuu` · note — no time.\n  more.\n\n" +
+      "* **07:33** `kuu` · note — invented time.\n",
+  );
+});
+
+test.skipIf(process.platform === "win32")("write stamps the timestamp before the referee", async () => {
+  // spec/70 step 2: henxels judges the stamped doc, so a contract that requires a timestamp
+  // is met by the server — never by a time the writer had to invent.
+  const stamp = setClock("10:00");
+  const root = copyBundle();
+  writeFileSync(join(root, "henxels.yaml"), "henxels: []\n", "utf8");
+  const bin = join(tempDir(), "bin");
+  const seen = join(tempDir(), "seen.md");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, "henxels"), `#!/bin/sh\ncat "$2" > '${seen}'\nexit 0\n`, { encoding: "utf8", mode: 0o755 });
+  process.env["PATH"] = prependPath(savedPath, bin);
+  const state = await makeState(root);
+  for (const [rel, content, mode] of [["uusi-kivi.md", NEW_DOC, "create"], ["kuu.md", KUU_REWRITE, "replace"]]) {
+    expect((await writePayload(state, rel!, content!, mode))["ok"]).toBe(true);
+    const judged = readFileSync(seen, "utf8");
+    expect(judged).toContain(`\ntimestamp: ${stamp}\n`);
+    expect(judged).not.toContain("08:30:00Z"); // the writer's own timestamp is overwritten
+    expect(readFileSync(join(root, rel!), "utf8")).toBe(judged);
+  }
+});
+
+// -- brain_write meta (spec/70): the frontmatter as data ----------------------------
+
+test("write meta is serialized by the server", async () => {
+  const stamp = setClock("10:00");
+  const root = copyBundle();
+  const state = await makeState(root);
+  const result = await writePayload(state, "uusi-kivi", "\n# Uusi kivi\n\nNear [Kuu](kuu.md).\n", "create", {
+    meta: {
+      type: "Concept", title: "Uusi kivi", description: "A new rock: hard, #1.",
+      tags: ["kivi", "a b: c"], timestamp: "2026-09-11T12:00:00Z", aliases: [],
+      lang: "yes", note: "Äänitys ", year: "2026",
+    },
+  });
+  expect(result["ok"]).toBe(true);
+  expect(readFileSync(join(root, "uusi-kivi.md"), "utf8")).toBe(
+    "---\ntype: Concept\ntitle: Uusi kivi\n" +
+      'description: "A new rock: hard, #1."\ntags: [kivi, "a b: c"]\naliases: []\n' +
+      'lang: "yes"\nnote: "Äänitys "\nyear: "2026"\n' +
+      `timestamp: ${stamp}\n---\n\n# Uusi kivi\n\nNear [Kuu](kuu.md).\n`,
+  );
+});
+
+test("write body-only replace keeps the frontmatter", async () => {
+  const stamp = setClock("10:00");
+  const root = copyBundle();
+  const state = await makeState(root);
+  expect((await writePayload(state, "kuu.md", "# Kuu\n\nPlain.\n", "replace"))["ok"]).toBe(true);
+  expect(readFileSync(join(root, "kuu.md"), "utf8")).toBe(
+    `---\ntype: Concept\ntags: [kuu]\ntimestamp: ${stamp}\n---\n\n# Kuu\n\nPlain.\n`,
+  );
+  const merged = await writePayload(state, "kuu.md", "# Kuu\n\nRewritten.\n", "replace", {
+    meta: { title: "Kuu", tags: null },
+  });
+  expect(merged["ok"]).toBe(true);
+  expect(readFileSync(join(root, "kuu.md"), "utf8")).toBe(
+    `---\ntype: Concept\ntimestamp: ${stamp}\ntitle: Kuu\n---\n\n# Kuu\n\nRewritten.\n`,
+  );
+});
+
+test("write meta rewrites whole key spans in place", async () => {
+  const stamp = setClock("10:00");
+  const root = copyBundle();
+  const state = await makeState(root);
+  const doc = "---\ntype: Concept\ntags:\n  - a\n  - b\ndescription: >\n  folded\n  text\ntitle: Old\n---\nbody\n";
+  const result = await writePayload(state, "spans", doc, "create", {
+    meta: { tags: ["c"], description: null, title: "New" },
+  });
+  expect(result["ok"]).toBe(true);
+  expect(readFileSync(join(root, "spans.md"), "utf8")).toBe(
+    `---\ntype: Concept\ntags: [c]\ntitle: New\ntimestamp: ${stamp}\n---\nbody\n`,
+  );
+});
+
+test("write append_section merges meta into the previous block", async () => {
+  const stamp = setClock("10:00");
+  const root = copyBundle();
+  const state = await makeState(root);
+  const result = await writePayload(state, "kuu.md", "## Nousuvesi\n\nSpring tides.\n", "append_section", {
+    meta: { description: "The moon." },
+  });
+  expect(result["ok"]).toBe(true);
+  const text = readFileSync(join(root, "kuu.md"), "utf8");
+  expect(text.startsWith(`---\ntype: Concept\ntags: [kuu]\ntimestamp: ${stamp}\ndescription: The moon.\n---\n\n# Kuu\n`)).toBe(true);
+  expect(text.endsWith("```\n\n## Nousuvesi\n\nSpring tides.\n")).toBe(true);
+});
+
+test("write meta rejects what it cannot serialize", async () => {
+  const root = copyBundle();
+  const state = await makeState(root);
+  for (const meta of [{ "bad key": "x" }, { n: 3 }, { tags: ["a", 1] }, { nested: { a: "b" } }]) {
+    const result = await writePayload(state, "uusi", "# X\n", "create", { meta: meta as Record<string, unknown> });
+    expect(result["ok"]).toBe(false);
+    expect(String(result["instruction"])).toContain("meta");
+  }
+  expect(existsSync(join(root, "uusi.md"))).toBe(false);
+  const entry = await writePayload(state, "paivakirja/2026-06-04", "* `kuu` · note — x", "add_entry", {
+    meta: { title: "X" },
+  });
+  expect(entry["ok"]).toBe(false);
+  expect(String(entry["instruction"])).toContain("frontmatter-free");
+  expect(existsSync(join(root, "paivakirja", "2026-06-04.md"))).toBe(false);
 });
 
 test("write gate refusal", async () => {

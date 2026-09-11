@@ -4,7 +4,7 @@ about: concept
 title: MCP tools
 description: The six MCP tools brainpick exposes — overview, search, read, neighbors, write, show — designed so a 27B model guesses right on the first try.
 tags: [agents, mcp]
-timestamp: 2026-09-06T11:30:00Z
+timestamp: 2026-09-11T06:36:05Z
 ---
 
 # MCP tools
@@ -34,8 +34,9 @@ what to call next.
 4. **`brain_neighbors({doc, depth?, layer?})`** — adjacency with
    descriptions, on the explicit-link layer, the entity layer of the
    [knowledge graph tier](knowledge-graph-tier.md), or both.
-5. **`brain_write({doc, content, mode})`** — the one write path, guarded by
-   the henxels contract; see [guarded writes](guarded-writes.md).
+5. **`brain_write({doc, content, mode, meta?})`** — the one write path, guarded by
+   the henxels contract; the frontmatter may arrive as `meta` data and every
+   time in the doc is the server's; see [guarded writes](guarded-writes.md).
 6. **`brain_show({nodes?, focus?, mode?, annotation?, clear?})`** — agent-driven
    [presentations](presentations.md): spotlight a subgraph, fly the camera to
    it, and caption it live in every open UI. Every argument is optional, and it

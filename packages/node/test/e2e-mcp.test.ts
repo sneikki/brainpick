@@ -90,7 +90,11 @@ test("mcp stdio roundtrip", { timeout: 120_000 }, async () => {
       new Set(["maa.md", "kuu.md", "planeetat.md", "index.md"]),
     );
 
-    const written = await call(client, "brain_write", { doc: "uusi-kivi", content: NEW_DOC });
+    const written = await call(client, "brain_write", { // meta crosses the transport (spec/70)
+      doc: "uusi-kivi",
+      content: "# Uusi kivi\n\nNear [Kuu](kuu.md).\n",
+      meta: { type: "Concept", title: "Uusi kivi", description: "A new rock." },
+    });
     expect(written.ok).toBe(true);
     expect(written.path).toBe("uusi-kivi.md");
     expect(written.seq).toBe(2);
@@ -137,6 +141,7 @@ test("mcp stdio roundtrip", { timeout: 120_000 }, async () => {
   });
 
   const text = readFileSync(join(root, "uusi-kivi.md"), "utf8");
+  expect(text.startsWith("---\ntype: Concept\ntitle: Uusi kivi\ndescription: A new rock.\ntimestamp: ")).toBe(true);
   expect(text).toMatch(/^timestamp: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/m);
   const manifest = JSON.parse(readFileSync(join(root, ".brainpick", "manifest.json"), "utf8"));
   expect(manifest.seq).toBe(3);
