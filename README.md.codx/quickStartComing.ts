@@ -16,10 +16,10 @@ compiles the brain, and wires itself to it. Paste this to the agent:
 > In the repo that holds (or should hold) the markdown knowledge base,
 > run \`brainpick init\` — it detects the bundle,
 > detects an embedding backend if one is reachable, writes the config, and
-> compiles tier 1. If there is no bundle yet, it hands off to henxels:
-> \`uvx henxels init --template brainpick-brain\` for a brain (an agent's
-> memory in \`_brain/\`) or \`uvx henxels init --template okf-llm-wiki\` for a
-> plain wiki (\`_wiki/\`); then run \`brainpick init\` again. Then run \`brainpick integrate claude-code\` (or
+> compiles tier 1. If there is no bundle yet, \`brainpick init --template brain\`
+> scaffolds a brain (an agent's memory in \`_brain/\`, with its henxels contract)
+> and does all of that in one go; for a plain wiki (\`_wiki/\`) run
+> \`uvx henxels init --template okf-llm-wiki\`, then \`brainpick init\` again. Then run \`brainpick integrate claude-code\` (or
 > \`opencode\`, or \`agents-md\`) to install the Agent Skill and print the
 > MCP snippet — wire it into the harness config. From then on, consult the
 > brain before grepping: \`brain_overview\` first, then \`brain_search\`,
@@ -45,14 +45,15 @@ brainpick search "anything"      # the brain answers from the terminal
 
 One-shot flavor works too: \`uvx --from ${FORK_GIT} brainpick init\`.
 
-### No wiki yet, or a messy one? henxels drives
+### No brain yet, or a messy wiki?
 
-A brand-new brain or wiki — [henxels](https://github.com/benquemax/henxels)
-scaffolds it and installs the contract that keeps every future write true
-to the format:
+A brand-new brain comes from brainpick itself — the template teaches agents
+how brainpick writes — and [henxels](https://github.com/benquemax/henxels)
+installs the contract that keeps every future write true to the format; a
+plain wiki is henxels' own template:
 
 \`\`\`bash
-uvx henxels init --template brainpick-brain    # a brain: _brain/ + contract + brainpick.toml
+brainpick init --template brain                # a brain: _brain/ + contract + brainpick.toml, then henxels init
 uvx henxels init --template okf-llm-wiki       # a wiki: _wiki/ + contract (--wiki-dir docs to govern docs/)
 \`\`\`
 
@@ -142,7 +143,7 @@ export const validate = async () => {
   for (const anchor of [
     'github.com/benquemax/brainpick/releases',
     'uvx henxels init --template okf-llm-wiki',
-    'uvx henxels init --template brainpick-brain',
+    'brainpick init --template brain',
     'henxels check --all',
   ]) {
     if (!content.includes(anchor)) {
@@ -156,7 +157,7 @@ export const validate = async () => {
     path.join(root, 'packages', 'python', 'src', 'brainpick', 'cli.py'),
     'utf-8',
   );
-  for (const flag of ['"serve"', '--root', '--open', '"init"', '"integrate"', '"mcp"', '"search"']) {
+  for (const flag of ['"serve"', '--root', '--open', '"init"', '--template', '"integrate"', '"mcp"', '"search"']) {
     if (!cli.includes(flag)) {
       throw new Error(`Quick start documents ${flag} but the CLI source does not define it`);
     }

@@ -4,10 +4,12 @@ about: concept
 title: "ADR: the brain format is a spec, the brain template lives in henxels"
 description: "Why brainpick specifies what a brain is but does not scaffold one — the starter template ships as a henxels use-case template, brainpick stays a renderer of well-formed data, and the two meet through the [brain] config section and a wiki the template links back to."
 tags: [brain-format, henxels, agents]
-timestamp: 2026-09-07T11:30:00Z
+timestamp: 2026-09-11T09:34:00Z
 ---
 
 # ADR: the brain format is a spec, the brain template lives in henxels
+
+**Superseded** by [ADR: the brain template lives in brainpick](brain-template-in-brainpick.md): the brain format is still a spec, but the template moved into brainpick.
 
 **Context.** Tom wants every project he touches to carry a brain with the
 same conventions from day one, so none is migrated to a better standard

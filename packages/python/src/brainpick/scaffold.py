@@ -9,8 +9,11 @@ enter git, so init appends it itself, exactly like the auth commands do.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
+import shutil
+import subprocess
 import sys
 import warnings
 from pathlib import Path
@@ -292,12 +295,52 @@ def _hand_off_to_henxels(voice: _Voice, root: Path, bundle: BundleInfo) -> int:
     else:
         voice.line("✗", f"no bundle at {root} — {bundle.docs} .md files but only {bundle.typed} "
                         "carry OKF `type:` frontmatter (3+ needed, or an index.md with okf_version)")
-    voice.step("brainpick never scaffolds — its sibling henxels owns the templates (one shot, no install):")
-    voice.step(f"  cd {root} && uvx henxels init --template brainpick-brain   "
-               "(a brain — your agent's memory in _brain/, spec/85)")
+    voice.step("scaffold a brain — your agent's memory in _brain/ (spec/85):")
+    voice.step(f"  brainpick init --template brain --root {root}")
+    voice.step("or a plain wiki with henxels' template (one shot, no install), then come back:")
     voice.step(f"  cd {root} && uvx henxels init --template okf-llm-wiki     (a plain wiki in _wiki/)")
-    voice.step(f"then come back: brainpick init --root {root}")
+    voice.step(f"  brainpick init --root {root}")
     return 1
+
+
+def _apply_template(voice: _Voice, root: Path, template: str, dry_run: bool,
+                    env: Mapping[str, str]) -> int | None:
+    """spec/85: scaffold the brain before init goes on — an int means stop with it."""
+    from brainpick.brain_template import TEMPLATES, scaffold_brain, template_files
+
+    if template not in TEMPLATES:
+        voice.line("✗", f"unknown template '{template}' — available: {', '.join(TEMPLATES)}")
+        return 1
+    if dry_run:
+        voice.raw("dry run — nothing written. --template brain would write (never overwriting):")
+        for rel in template_files():
+            voice.step(("keep  " if (root / rel).exists() else "write ") + rel)
+        voice.step("then run henxels init (a git repository with henxels on PATH), then init as usual")
+        return 0
+
+    report = scaffold_brain(root, datetime.date.today().isoformat(), generate_bundle_id())
+    kept = f", {len(report['existing'])} existing left untouched" if report["existing"] else ""
+    voice.line("✓", f"template: brain scaffolded — {len(report['written'])} files written{kept}")
+    if report["gitignore"] is not None:
+        voice.line("✓", f"gitignore: brain entries {report['gitignore']}")
+    if report["fragment"] is not None:
+        voice.line("○", "henxels.yaml exists — never edited; paste the brain contract in yourself:")
+        voice.raw(report["fragment"])
+
+    is_repo = (root / ".git").exists()
+    henxels = shutil.which("henxels", path=env.get("PATH", ""))
+    if is_repo and henxels is not None:
+        proc = subprocess.run([henxels, "init"], cwd=root, capture_output=True, text=True,
+                              env={**os.environ, **env})
+        if proc.returncode == 0:
+            voice.line("✓", "henxels: hooks, schema and the AGENTS.md digest installed")
+        else:
+            voice.line("✗", f"henxels init failed (exit {proc.returncode}) — run it yourself: "
+                            f"cd {root} && henxels init")
+    else:
+        why = "henxels is not on PATH" if is_repo else "not a git repository yet"
+        voice.line("○", f"henxels: {why} — install the referee: cd {root} && henxels init")
+    return None
 
 
 def _report_backends(
@@ -338,6 +381,7 @@ def run_init(
     dry_run: bool = False,
     env: Mapping[str, str] | None = None,
     probes: list[tuple[str, Backend | None]] | None = None,
+    template: str | None = None,
 ) -> int:
     env = os.environ if env is None else env
     voice = _Voice(env)
@@ -349,6 +393,12 @@ def run_init(
         voice.arrow(f"create it (mkdir -p {root}) or point --root at your bundle")
         return 1
     root = root.resolve()
+
+    # template — scaffold first, then init serves what it wrote (spec/85)
+    if template is not None:
+        stop = _apply_template(voice, root, template, dry_run, env)
+        if stop is not None:
+            return stop
 
     # 0 — the config may already exist and point below itself ([bundle] root, spec/80):
     # a brain scaffolded by henxels keeps brainpick.toml at the repo root and the
@@ -388,7 +438,11 @@ def run_init(
 
     # 4 — henxels
     contract = detect_henxels(root)
-    if contract is not None:
+    gated = contract is not None and "compile --check-fresh" in contract.read_text(encoding="utf-8",
+                                                                                     errors="replace")
+    if gated:
+        voice.line("✓", f"henxels: contract at {contract} — its freshness gate is in place")
+    elif contract is not None:
         voice.line("✓", f"henxels: contract at {contract} — freshness gate offered below")
     else:
         voice.line("○", "henxels: no contract governs this bundle (optional) — uv tool install henxels")
@@ -462,7 +516,7 @@ def run_init(
     voice.raw(mcp_snippets(root))
 
     # 8 — the henxels freshness gate
-    if contract is not None:
+    if contract is not None and not gated:
         voice.raw()
         voice.raw(f"Gate commits on a fresh brain — paste into {contract}:")
         voice.raw()
@@ -522,7 +576,7 @@ def run_doctor(
         emit("✓", f"bundle: {bundle.typed} typed concept docs of {bundle.docs} (density scan)")
     else:
         emit("✗", f"bundle: nothing OKF-shaped at {root}",
-             f"cd {root} && uvx henxels init --template brainpick-brain   (or okf-llm-wiki)")
+             f"brainpick init --template brain --root {root}   (or: cd {root} && uvx henxels init --template okf-llm-wiki)")
 
     # artifacts
     verdict = check_fresh(root, config)

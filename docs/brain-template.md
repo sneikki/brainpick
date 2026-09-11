@@ -2,36 +2,42 @@
 type: playbook
 about: thing
 title: "The brain template"
-description: "The henxels starter template that scaffolds a brainpick-compatible _brain/ — the rules it enforces, how they split between henxels (structure) and brainpick (serving), what is fixed for life versus cheap to iterate, how the docs get read at all, and the migration story for later format versions."
+description: "brainpick init --template brain — the starter that scaffolds a format-2 _brain/ with its henxels contract and a first skill that never supplies a time; the rules it enforces, why it lives in brainpick, what is fixed for life versus cheap to iterate, how the docs get read at all, and the migration story for format versions."
 tags: [brain-format, henxels]
-timestamp: 2026-09-07T17:00:00Z
+timestamp: 2026-09-11T09:52:55Z
 ---
 
 # The brain template
 
-`henxels init --template brainpick-brain` scaffolds a [brain](brain.md):
+`brainpick init --template brain` scaffolds a [brain](brain.md):
 the `_brain/` folder with its five memory types, a henxels contract that
 enforces the brain format, a first skill that teaches the agent how to use
-it, and a pointer back here. It is the fastest way from an empty repo to a
+it, and a pointer back here. It then runs `henxels init` (in a git repository
+with henxels on `PATH`) to install the referee — hooks, schema and the
+`AGENTS.md` digest — and continues as a plain `brainpick init`: backends,
+config, a compiled tier 1. It is the fastest way from an empty repo to a
 brain that brainpick can compile, serve and federate — and the reason every
 brain that starts from it shares the same conventions, so none of them has
 to be migrated to a better standard later.
 
-## Why the template lives in henxels
+## Why the template lives in brainpick
 
-brainpick is a tool that *renders correctly formatted data*; it stays clean
-of project-layout opinions. henxels is already a requirement — it is the
-referee behind [Guarded writes](guarded-writes.md) and the freshness gate —
-and it already ships use-case templates (`okf-llm-wiki`, `agentic-project`).
-A third template is the natural home: the contract carries each rule's
-`why:`, so the contract *is* the documentation, and the digest henxels syncs
-into `AGENTS.md` puts those reasons where every agent reads them. The
-division of labour: henxels scaffolds structure and enforces it; `brainpick
-init` detects the bundle, mints an id and compiles ([Onboarding](onboarding.md)).
-Two tools, one handoff.
+The template is not only a layout: its first skill teaches agents how to
+*write*, and how to write is exactly what brainpick decides — the server owns
+every clock (a page's `timestamp`, a journal entry's `**HH:MM**`), takes the
+frontmatter as `meta` data and adds journal entries with `add_entry` into day
+files ([Guarded writes](guarded-writes.md)). While the template lived in
+henxels it kept telling agents to bump `timestamp` themselves and to write
+month files, so every brain it started taught models to invent times
+([ADR: the brain template lives in brainpick](reference/adr/brain-template-in-brainpick.md)).
 
-The template is also a distribution channel: it is how a henxels user
-discovers brainpick, and the links in its seeds land on this wiki.
+henxels still does what it is for: it is the referee. The contract the
+template writes carries each rule's `why:`, so the contract *is* the
+documentation, and the digest `henxels init` syncs into `AGENTS.md` puts
+those reasons where every agent reads them. The division of labour:
+brainpick writes the brain and its contract, henxels enforces it on every
+commit and every `brain_write`. The plain `okf-llm-wiki` template stays in
+henxels — a wiki's layout does not depend on how brainpick writes.
 
 ## What the template scaffolds
 
@@ -45,16 +51,17 @@ _brain/
     skilltree.md         generated from depends_on — edit the skills, never the tree
   journals/
     index.md             what a journal is and how the month rolls
-    YYYY-MM.md           the current month — a ## YYYY-MM-DD section per day, newest first
-    archive/YYYY-MM.md   earlier months, moved here by the agent on the first entry of a new month
+    YYYY-MM-DD.md        one file per day — its entries newest first, each headed by the server's **HH:MM**
+    archive/YYYY-MM-DD.md  earlier months' days, moved here by the agent on the first entry of a new month
   raw/index.md        undistilled source material — greppable, indexed, excluded from the compiled brain
   vision/index.md     the northstar as a book; unlinked chapters are invisible
   plans/index.md      decided work only
 _todo.md              parking lot — project management, beside the brain
 _temp/                scratch — gitignored, always excluded
-brainpick.toml        shared policy, committed: [bundle] root = "_brain", exclude = ["raw/*"], [brain] format = 1
+brainpick.toml        shared policy, committed: [bundle] id, root = "_brain", exclude = ["raw/*"], [brain] format = 2
 brainpick.local.toml  machine-local endpoints — gitignored, never committed
 henxels.yaml          the contract below
+henxels_checks.py     the log_headings_are_dates check the contract uses
 ```
 
 ## The rules
@@ -84,8 +91,9 @@ the digest shows the agent.
 
 6. OKF frontmatter on every concept doc: `type` required, `title` and
    `description` expected; a description containing `: ` is quoted.
-7. Freshness is explicit: `timestamp` is bumped whenever a doc changes
-   (`bump_updated_on_change`).
+7. Freshness is explicit: `timestamp` changes whenever a doc changes
+   (`bump_updated_on_change`) — `brain_write` stamps it with the server's
+   clock, so an agent never writes one.
 8. Reserved files stay frontmatter-free: `index.md` and `log.md`; the root
    `index.md` is compile-managed.
 9. Every doc is reachable: `referenced_in` gates make an invisible doc *fail
@@ -93,17 +101,18 @@ the digest shows the agent.
 10. Every link lands in the bundle: `rooted_links_resolve` and
     `links_resolve` — no ghosts hiding.
 11. Kebab-case everywhere.
-12. One journal file per month, `journals/YYYY-MM.md`, a `## YYYY-MM-DD`
-    section per day, newest first, no frontmatter
-    (`filename_matches_regex`, `no_frontmatter`, `log_headings_are_dates`).
-    Entries point to what they changed, never restate it.
-13. Only the current month stays at the top of `journals/` (`max_files: 1`
-    with the index excepted); earlier months live in `journals/archive/`.
+12. One journal file per day, `journals/YYYY-MM-DD.md`, headed by its
+    `## YYYY-MM-DD` section, no frontmatter (`filename_matches_regex`,
+    `no_frontmatter`, `log_headings_are_dates`). Entries arrive one at a time
+    through `add_entry`, whose server writes each `**HH:MM**` head; they point
+    to what they changed, never restate it.
+13. Only the current month's days stay at the top of `journals/`
+    (`max_files: 32` with the index); earlier days live in `journals/archive/`.
     The roll is the agent's act — the first skill teaches it, the check
     blocks a commit that forgot it. It is deliberately not a brainpick
     command: the engine does not know the layout
     ([Structure agnosticism](structure-agnosticism.md)).
-14. Archived months keep the same shape, untouched.
+14. Archived days keep the same shape, untouched.
 15. `raw/` is orderly, never a dump: kebab-case names, listed in
     `raw/index.md`, a wider filetype list (`.csv .html .pdf .png …`), no
     frontmatter or links required. `brainpick.toml` excludes it
@@ -210,10 +219,11 @@ summaries.
 ## Status
 
 The format is specified ([Spec: brain format](reference/spec/brain-format.md))
-and both engines read `[brain]`. The template ships in henxels
-(`henxels init --template brainpick-brain`, documented in
-[henxels' brainpick brain starter](https://github.com/benquemax/henxels/blob/main/docs/brainpick-brain-starter.md)),
-and [brainpick init](reference/cli/init.md) recognises the result in place —
-config at the repo root, bundle in `_brain/` — in both engines. Still to come:
+and both engines read `[brain]`. The template ships in both engines as
+`brainpick init --template brain` ([brainpick init](reference/cli/init.md)),
+from one canonical tree (`integrations/brain-template/`) whose shipped copies
+the parity tests hold byte-identical, and the `brain-template` conformance
+class holds both engines to one golden scaffold. Brains scaffolded earlier by
+henxels' `brainpick-brain` template (format 1, month journals) keep compiling. Still to come:
 the overview listing `skills/` first, `skilltree.md` generation, the Agent
 Skill export and `brain://` link extraction.

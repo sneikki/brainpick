@@ -129,6 +129,21 @@ def test_recall_golden(case, tmp_path, monkeypatch, capsys):
         assert out == (EXPECTED / case["bundle"] / case["golden"]).read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize("case", _cases("brain-template"), ids=_case_ids("brain-template"))
+def test_brain_template_golden(case, tmp_path):
+    """spec/85: the scaffold's bytes — every written file, nothing missing or extra."""
+    from brainpick.brain_template import scaffold_brain
+
+    report = scaffold_brain(tmp_path, case["date"], case["bundle_id"])
+    written = {p.relative_to(tmp_path).as_posix(): p.read_text(encoding="utf-8")
+               for p in tmp_path.rglob("*") if p.is_file()}
+    golden = json.loads((EXPECTED / case["golden"]).read_text(encoding="utf-8"))
+    assert written == golden
+    again = scaffold_brain(tmp_path, case["date"], case["bundle_id"])
+    assert again["written"] == [] and again["gitignore"] is None
+    assert len(report["written"]) + 1 == len(golden)  # the template's files plus .gitignore
+
+
 @pytest.mark.parametrize("case", _cases("query"), ids=_case_ids("query"))
 def test_query(case, tmp_path):
     root = _bundle_copy(tmp_path, case["bundle"])

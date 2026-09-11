@@ -159,6 +159,20 @@ def regen_recall(case: dict) -> None:
         print(f"golden: {dst.relative_to(REPO)}")
 
 
+def regen_brain_template(case: dict) -> None:
+    """spec/85: the brain template scaffold as one JSON object of path -> content."""
+    from brainpick.brain_template import scaffold_brain
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        scaffold_brain(root, case["date"], case["bundle_id"])
+        tree = {p.relative_to(root).as_posix(): p.read_text(encoding="utf-8")
+                for p in sorted(root.rglob("*")) if p.is_file()}
+    dst = EXPECTED / case["golden"]
+    dst.write_text(json.dumps(tree, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(f"golden: {dst.relative_to(REPO)}")
+
+
 def main() -> None:
     for case in CASES:
         if case["class"] == "compile":
@@ -178,6 +192,8 @@ def main() -> None:
             regen_delta(case)
         elif case["class"] == "recall":
             regen_recall(case)
+        elif case["class"] == "brain-template":
+            regen_brain_template(case)
     print("done — review the diffs like code before committing.")
 
 

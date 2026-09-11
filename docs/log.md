@@ -2,6 +2,14 @@
 
 ## 2026-09-11
 
+- Changed: the brain template lives in brainpick (spec/85, ADR "the brain
+  template lives in brainpick"). `brainpick init --template brain` scaffolds a
+  format-2 brain — day journals, a first skill that tells agents never to
+  write a time and to use `add_entry` and `meta` — writes its henxels
+  contract, runs `henxels init`, and compiles. Both engines ship one
+  canonical tree (`integrations/brain-template/`, synced by
+  `scripts/sync-brain-template.mjs`); the `brain-template` conformance class
+  holds them to one golden. henxels' `okf-llm-wiki` stays the wiki starter.
 - Added: `brainpick recall` speaks Hermes (spec/72). When `hook_event_name` is
   `pre_llm_call` the prompt comes from `extra.user_message` and the answer is
   `{"context": …}`, which Hermes appends to the user's message; the rest of
